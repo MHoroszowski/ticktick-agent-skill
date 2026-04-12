@@ -1,0 +1,25 @@
+{
+  "name": "pai-skill-ticktick",
+  "version": "0.1.0",
+  "private": true,
+  "description": "PAI skill: TickTick CRUD via a thin Bun CLI over the unofficial v2 API.",
+  "type": "module",
+  "bin": {
+    "ticktick": "./bin/ticktick"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "smoke": "./tests/smoke.sh"
+  },
+  "dependencies": {
+    "ticktick-client": "0.2.1"
+  },
+  "//": "Using the npm package for prebuilt dist/. Bus-factor fallback: MHoroszowski/ticktick-client fork pinned at 813a2cb813805075d65acbb41791be338b67419c (swap dep line to github:MHoroszowski/ticktick-client#<sha> and commit prebuilt dist to the fork if npm is ever compromised or unpublished).",
+  "devDependencies": {
+    "@types/bun": "latest",
+    "typescript": "^5.4.0"
+  },
+  "engines": {
+    "bun": ">=1.0.0"
+  }
+}
