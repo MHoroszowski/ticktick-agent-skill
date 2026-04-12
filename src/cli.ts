@@ -1,0 +1,328 @@
+/**
+ * cli.ts — top-level CLI dispatcher.
+ *
+ * Entry: main(argv) → Promise<number> (exit code). The bin shim awaits this
+ * and calls process.exit(). We never call process.exit from inside main so
+ * that this module stays testable and composable.
+ */
+
+import { loadCredentials } from './env.ts';
+import { resolveSessionPath } from './session.ts';
+import { TickTickClientAdapter, AdapterError, mapLibraryError } from './adapter.ts';
+import type { TickTickAdapter } from './adapter.ts';
+import { UsageError, getExitCode } from './errors.ts';
+import { setDebug, writeError, writeHuman } from './output.ts';
+
+import * as auth from './commands/auth.ts';
+import * as tasks from './commands/tasks.ts';
+import * as projects from './commands/projects.ts';
+import * as tags from './commands/tags.ts';
+import * as checklist from './commands/checklist.ts';
+
+// ──────────────────────────────────────────────────────────────────
+// Public surface
+// ──────────────────────────────────────────────────────────────────
+
+export type GlobalOpts = {
+  readonly human: boolean;
+  readonly debug: boolean;
+};
+
+/**
+ * Factory used by every command handler. Loads creds, resolves session
+ * path, constructs the adapter. Throws AUTH_MISSING_CREDS if either env
+ * var is missing.
+ */
+export function createAdapter(): TickTickAdapter {
+  const creds = loadCredentials();
+  if (!creds) {
+    throw new AdapterError(
+      'AUTH_MISSING_CREDS',
+      'No TickTick credentials. Set TICKTICK_EMAIL and TICKTICK_PASSWORD in ~/.env or the environment.',
+    );
+  }
+  return new TickTickClientAdapter({
+    username: creds.email,
+    password: creds.password,
+    sessionFilePath: resolveSessionPath(),
+  });
+}
+
+export async function main(argv: readonly string[]): Promise<number> {
+  const { opts, positional } = parseGlobalFlags(argv);
+  setDebug(opts.debug);
+
+  if (positional.length === 0 || positional[0] === 'help' || positional[0] === '--help' || positional[0] === '-h') {
+    writeHuman(helpText());
+    return 0;
+  }
+
+  try {
+    const [command, ...rest] = positional;
+    switch (command) {
+      case 'login':
+        await auth.login(rest, opts);
+        return 0;
+      case 'logout':
+        await auth.logout(rest, opts);
+        return 0;
+      case 'whoami':
+        await auth.whoami(rest, opts);
+        return 0;
+      case 'tasks':
+        await routeTasks(rest, opts);
+        return 0;
+      case 'projects':
+        await routeProjects(rest, opts);
+        return 0;
+      case 'tags':
+        await routeTags(rest, opts);
+        return 0;
+      case 'checklist':
+        await routeChecklist(rest, opts);
+        return 0;
+      default:
+        throw new UsageError(`Unknown command: ${command}. Run 'ticktick help' for usage.`);
+    }
+  } catch (err) {
+    writeError(mapAnyError(err));
+    return getExitCode(err);
+  }
+}
+
+function mapAnyError(err: unknown): unknown {
+  if (err instanceof UsageError) return err;
+  if (err instanceof AdapterError) return err;
+  if (err instanceof Error) return mapLibraryError(err);
+  return mapLibraryError(err);
+}
+
+// ──────────────────────────────────────────────────────────────────
+// Subcommand routing
+// ──────────────────────────────────────────────────────────────────
+
+async function routeTasks(argv: readonly string[], opts: GlobalOpts): Promise<void> {
+  const [sub, ...rest] = argv;
+  switch (sub) {
+    case undefined:
+    case 'list':
+      return tasks.list(rest, opts);
+    case 'get':
+      return tasks.get(rest, opts);
+    case 'create':
+      return tasks.create(rest, opts);
+    case 'update':
+      return tasks.update(rest, opts);
+    case 'complete':
+      return tasks.complete(rest, opts);
+    case 'delete':
+      return tasks.remove(rest, opts);
+    case 'move':
+      return tasks.move(rest, opts);
+    default:
+      throw new UsageError(`Unknown tasks subcommand: ${sub}`);
+  }
+}
+
+async function routeProjects(argv: readonly string[], opts: GlobalOpts): Promise<void> {
+  const [sub, ...rest] = argv;
+  switch (sub) {
+    case undefined:
+    case 'list':
+      return projects.list(rest, opts);
+    case 'get':
+      return projects.get(rest, opts);
+    default:
+      throw new UsageError(`Unknown projects subcommand: ${sub}`);
+  }
+}
+
+async function routeTags(argv: readonly string[], opts: GlobalOpts): Promise<void> {
+  const [sub, ...rest] = argv;
+  switch (sub) {
+    case undefined:
+    case 'list':
+      return tags.list(rest, opts);
+    default:
+      throw new UsageError(`Unknown tags subcommand: ${sub}`);
+  }
+}
+
+async function routeChecklist(argv: readonly string[], opts: GlobalOpts): Promise<void> {
+  const [sub, ...rest] = argv;
+  switch (sub) {
+    case undefined:
+    case 'list':
+      return checklist.list(rest, opts);
+    case 'add':
+      return checklist.add(rest, opts);
+    case 'complete':
+      return checklist.complete(rest, opts);
+    case 'delete':
+      return checklist.remove(rest, opts);
+    default:
+      throw new UsageError(`Unknown checklist subcommand: ${sub}`);
+  }
+}
+
+// ──────────────────────────────────────────────────────────────────
+// Arg parsing
+// ──────────────────────────────────────────────────────────────────
+
+/**
+ * Strip global flags (--human, --debug, --json, --no-color) from argv,
+ * returning the cleaned positional array plus the parsed opts.
+ */
+function parseGlobalFlags(argv: readonly string[]): {
+  opts: GlobalOpts;
+  positional: readonly string[];
+} {
+  let human = false;
+  let debug = false;
+  const positional: string[] = [];
+  for (const token of argv) {
+    switch (token) {
+      case '--human':
+        human = true;
+        break;
+      case '--debug':
+        debug = true;
+        break;
+      case '--json':
+      case '--no-color':
+        // no-op: JSON is the default, color isn't emitted
+        break;
+      default:
+        positional.push(token);
+    }
+  }
+  return { opts: { human, debug }, positional };
+}
+
+/**
+ * Parse command-level flags: --key value and --key=value.
+ * Repeated keys (e.g. --tags) accept CSV values, not repeated flags.
+ * Returns a { flags, positional } pair.
+ *
+ * Exported so command handlers share one parser.
+ */
+export function parseCommandArgs(argv: readonly string[]): {
+  flags: Record<string, string>;
+  positional: readonly string[];
+} {
+  const flags: Record<string, string> = {};
+  const positional: string[] = [];
+  for (let i = 0; i < argv.length; i++) {
+    const token = argv[i]!;
+    if (token.startsWith('--')) {
+      const eq = token.indexOf('=');
+      if (eq > 0) {
+        const key = token.slice(2, eq);
+        const value = token.slice(eq + 1);
+        flags[key] = value;
+      } else {
+        const key = token.slice(2);
+        const next = argv[i + 1];
+        if (next !== undefined && !next.startsWith('--')) {
+          flags[key] = next;
+          i += 1;
+        } else {
+          flags[key] = 'true';
+        }
+      }
+    } else {
+      positional.push(token);
+    }
+  }
+  return { flags, positional };
+}
+
+/**
+ * Require a specific flag from a parsed flags object; throws UsageError if missing.
+ */
+export function requireFlag(
+  flags: Record<string, string>,
+  name: string,
+  hint?: string,
+): string {
+  const v = flags[name];
+  if (v === undefined || v === '') {
+    throw new UsageError(
+      `Missing required flag: --${name}${hint ? ` (${hint})` : ''}`,
+    );
+  }
+  return v;
+}
+
+// ──────────────────────────────────────────────────────────────────
+// Help text
+// ──────────────────────────────────────────────────────────────────
+
+function helpText(): string {
+  return `ticktick — PAI skill CLI for TickTick (unofficial v2 API)
+
+USAGE
+  ticktick <command> [subcommand] [flags]
+
+GLOBAL FLAGS
+  --human        Pretty-print instead of JSON (default: JSON)
+  --debug        Emit debug info to stderr
+  --json         Explicit JSON output (default)
+  --no-color     No color in output (no-op for now)
+
+COMMANDS
+  login                                    Force fresh login (seeds session)
+  logout                                   Delete local session
+  whoami                                   Verify session, show user + age
+
+  tasks list [flags]                       List tasks
+    --project <id|name>                      filter by project
+    --status open|completed|abandoned|all    filter by status (default: open)
+    --due today|overdue|week                 filter by due window
+    --tag <name>                             filter by tag
+    --limit N                                cap result count
+  tasks get --id <taskId>                  Fetch a single task
+  tasks create --title <t> [flags]         Create a task
+    --project <id|name> --content <md>
+    --due <ISO> --priority none|low|medium|high
+    --tags a,b,c
+  tasks update --id <id> --project <pid> [flags]
+                                           Update a task (same optional fields)
+  tasks complete --id <id> [--project <pid>]
+                                           Mark a task done
+  tasks delete --id <id> [--project <pid>]
+                                           Delete (abandon) a task
+  tasks move --id <id> --to <id|name> [--from <pid>]
+                                           Move to a different list.
+                                           ⚠️ returns a NEW task id (copy+delete)
+
+  projects list                            List all projects
+  projects get --id <id|name>              Fetch one project
+
+  tags list                                List all tags
+
+  checklist list --task <id>               List checklist items inside a task
+  checklist add --task <id> --project <pid> --title <t>
+  checklist complete --task <id> --project <pid> --item <itemId>
+  checklist delete --task <id> --project <pid> --item <itemId>
+
+EXIT CODES
+  0  success
+  1  unexpected error
+  2  usage error
+  3  auth error (missing creds, failed login, expired session)
+  4  not found
+  5  network / rate limited
+  6  validation error
+
+ENVIRONMENT
+  TICKTICK_EMAIL      (or TICKTICK_USERNAME) — set in ~/.env or the shell
+  TICKTICK_PASSWORD
+  TICKTICK_DEBUG=1    forces --debug
+
+NOTES
+  - Nested subtasks (parentId-based child tasks) are NOT yet supported.
+    See README.md for the follow-up work required.
+  - 2FA / MFA on your account is NOT supported.
+`;
+}

@@ -1,0 +1,11 @@
+#!/usr/bin/env bun
+/**
+ * bin/ticktick — thin shim that invokes src/cli.ts main().
+ *
+ * Kept minimal so the CLI logic stays in src/ for typecheck coverage.
+ */
+
+import { main } from '../src/cli.ts';
+
+const exitCode = await main(process.argv.slice(2));
+process.exit(exitCode);
