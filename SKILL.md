@@ -81,6 +81,42 @@ If a `PREFERENCES.md` file exists there, load and apply it. Typical overrides: d
 - ❌ 2FA / MFA accounts (library does not support the 2FA login flow)
 - ❌ Listing trash (TickTick's v2 API has a known bug here — the library documents it). Restore works if you already know the task id from prior state.
 
+## Known quirks (v1.3 — read this BEFORE diagnosing a bug)
+
+These are upstream-library limitations and untested surface areas we already know about. **If the user reports unexpected behavior, check this list FIRST** — don't treat it as a new bug to investigate. Surface the known issue to the user and offer the manual workaround when applicable.
+
+### Verified quirks (the command name lies about what it does)
+
+- **`tags rename`, `tags delete`, `tags update`, `tags merge` are ALL BROKEN upstream — calls return `ok: true` but NOTHING persists.** Verified empirically on 2026-04-13: the library's tag-mutation methods POST to `/api/v2/batch/tag` with various body shapes. TickTick's server accepts the requests (etag changes, proving processing) but silently drops the mutations. Confirmed broken: `tags rename` (label not updated), `tags delete` (tag stays visible after delete). `tags update` and `tags merge` share the same endpoint and are almost certainly broken the same way (untested). **The only working tag operation in v1.3 is `tags create`.** Listing tags also works (`tags list`). **When the user asks to rename, delete, update, or merge a tag: (a) the CLI will return `ok: true` but WILL NOT actually do anything, (b) the tag will still be there / still have the old label / still have the old merge partner.** Do NOT silently report success. Always explain the limitation and offer the manual workaround:
+  - **Rename tag** → (1) `tags create --name <new>`, (2) `tasks update --tags <new>` for each affected task, (3) try `tags delete --name <old>` (also known-broken, but may clear it via the web UI manually).
+  - **Delete tag** → the API call does nothing. Tell the user to delete via the TickTick web UI directly, OR first untag every task referencing it with `tasks update --tags` (removing the tag from each task's list) so it becomes orphaned.
+  - **Merge tags** → three-step like rename: re-tag all tasks from source → target, then try delete (same caveat).
+  - **Update tag color/label** → cannot be done via this skill. Use the TickTick web UI directly.
+
+- **`tasks unpin` uses an escape-hatch endpoint.** The library's native `tasks.unpin()` calls `POST /api/v2/task/{id}` with `pinnedTime: null`, which TickTick silently no-ops. The adapter bypasses via `POST /api/v2/batch/task` with the FULL task body and sentinel `pinnedTime: "-1"`. Works reliably — no user-facing effect. Context only for debugging adapter source.
+
+- **`tasks completed --from --to` uses client-side date filtering.** The library's `statistics.listCompleted()` hits `/api/v2/project/all/completed/` which returns HTTP 500 for any date window. The adapter routes through the iterator endpoint (`/api/v2/project/all/closed`) and filters by `completedTime` client-side. External contract preserved (`mode: "statistics"` still reported). Slower for multi-year ranges with heavy histories; fine for typical 7-30 day windows.
+
+### Untested in v1.3 smoke — trust carefully
+
+These v1.3 features typecheck and look wired correctly but were NOT covered by smoke before ship. **Don't blindly trust `ok: true`** — if the user reports a mutation that doesn't persist, investigate via a minimal probe script before claiming a new bug:
+
+- `tags merge` — library calls `POST /api/v2/batch/tag` with `{merge: [...]}`. Unknown end-to-end.
+- `tags delete` — library calls the batch endpoint. Unknown end-to-end.
+- `projects create` / `update` / `delete` — library exposes all three; smoke ran out before testing them.
+- `tasks restore` — requires explicit id (trash listing is broken upstream). Untested whether the restore call itself works.
+
+### The upstream-library bug pattern
+
+Multiple v1.3 features hit the same shape of library bug: the library uses `POST /api/v2/task/{id}` (a "patch style" endpoint) for mutations that TickTick silently no-ops. **If a mutation returns `ok: true` but the re-read shows the change didn't persist, suspect this pattern.** Canonical fix: bypass via `POST /api/v2/batch/task` with the FULL task body and an `{add: [], update: [task], delete: [], addAttachments: [], updateAttachments: [], deleteAttachments: []}` envelope. See `unpinTask` in `src/adapter.ts` for the canonical worked example.
+
+### Protocol when the user hits a rough edge
+
+1. Check against the "Verified quirks" list — if match, explain the limitation, offer the manual workaround, and only implement if they ask
+2. Check against the "Untested" list — if match, run a minimal probe to confirm whether it's actually broken before assuming
+3. If it's a new bug, diagnose via the upstream-library pattern above before reaching for a full RE session
+4. **Don't silently fix or silently skip** — always surface the known-issue status to the user so they know what they're getting
+
 ## Execution Contract
 
 - All workflows invoke `~/.claude/skills/TickTick/bin/ticktick <subcommand> [flags]`.

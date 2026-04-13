@@ -89,17 +89,32 @@ export async function remove(argv: readonly string[], opts: GlobalOpts): Promise
 export async function rename(argv: readonly string[], opts: GlobalOpts): Promise<void> {
   const { flags } = parseCommandArgs(argv);
   const name = requireFlag(flags, 'name', 'current tag slug');
-  const to = requireFlag(flags, 'to', 'new tag slug or label');
+  const to = requireFlag(flags, 'to', 'new display label (slug-style: lowercase, no whitespace)');
   validateTagName(to);
 
   const adapter = createAdapter();
   await adapter.renameTag(name, to);
 
   if (opts.human) {
-    writeHuman(`Renamed tag '${name}' → '${to}'`);
+    writeHuman(
+      `⚠️  tags rename is BROKEN upstream — the API call returned ok but the tag ` +
+        `was NOT actually renamed. The library posts to /api/v2/batch/tag with ` +
+        `{name, label} and TickTick's server silently drops the update. See ` +
+        `README.md "Known quirks" for the manual workaround.`,
+    );
     return;
   }
-  writeOk({ from: name, to });
+  writeOk({
+    name,
+    requestedLabel: to,
+    persisted: false,
+    warning:
+      'BROKEN: This call completes without error BUT the label is NOT actually ' +
+      'updated on TickTick. Verified empirically on 2026-04-13 — the v2 /batch/tag ' +
+      'endpoint silently drops label mutations. Use the manual workaround: ' +
+      '(1) tags create --name <new>, (2) tasks update --tags <new> for each ' +
+      'affected task, (3) tags delete --name ' + `'${name}'. See README.md "Known quirks".`,
+  });
 }
 
 export async function merge(argv: readonly string[], opts: GlobalOpts): Promise<void> {

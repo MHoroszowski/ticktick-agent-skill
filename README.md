@@ -44,6 +44,49 @@ This is the largest intentional gap remaining. It's tracked as a follow-up — s
 - ⚠️ **Task moves change the task id.** TickTick's REST API doesn't support in-place project moves, so `tasks move` is implemented as copy-to-destination + delete-from-source. The response includes both the new task and `previousId` so the agent can update any references.
 - ⚠️ **`projects delete` requires `--confirm`.** Without it, the CLI prints a warning showing the affected task count and exits with validation error code 6. This is a deliberate safety gate because deleting a project also deletes every task inside it.
 
+## Known quirks in v1.3
+
+These are upstream library quirks we've identified during smoke-testing. Documented here so you know what to expect before reaching for a sharp-edged feature.
+
+### The whole tags write-module is broken upstream
+
+`tags rename`, `tags delete`, `tags update`, and `tags merge` are all broken in v1.3. The CLI returns `ok: true` but TickTick's server silently drops the mutation — verified empirically 2026-04-13 for rename (label not updated) and delete (tag stays visible). The others share the same endpoint (`POST /api/v2/batch/tag`) and are almost certainly broken the same way.
+
+**Only `tags create` and `tags list` work reliably.**
+
+**Effect on you as a user:**
+- Try to delete a tag → the CLI says success, but the tag is still there.
+- Try to rename a tag → the CLI says success, but the tag still has its old label.
+- Try to merge two tags → probably the same deal.
+
+**Workarounds until the library is fixed:**
+- **Need to delete a tag cleanly:** use the TickTick web UI directly.
+- **Need to "rename" a tag:** create a new tag with `tags create --name <new>`, re-tag each affected task with `tasks update --tags <new>` (you'll need to read each task's existing tag list and swap old→new), then delete the old one via the web UI.
+- **Need to merge tags:** same three-step flow as rename.
+- **Need to change a tag's color or label:** edit it in the TickTick web UI.
+
+Athena knows this pattern and will offer the manual workaround whenever you hit one of these commands. She won't silently claim success.
+
+**What caused this:** the upstream `ticktick-client` library's tag-mutation endpoints use a body shape that TickTick's current v2 server silently no-ops. Reverse-engineering what the actual web UI sends (via Playwright XHR capture) would resolve it — same approach that cracked the `tasks unpin` bug on the same date. Queued for a focused library-fixes follow-up plan.
+
+### `tasks unpin` uses a workaround endpoint
+
+Cosmetic / background detail. The underlying library's `tasks.unpin()` calls a patch endpoint that TickTick silently no-ops. The adapter bypasses via `POST /api/v2/batch/task` with a sentinel `pinnedTime: "-1"`. **No user-facing effect** — unpin works as expected. This only matters if you're reading adapter source and wondering why it looks different from the other pin-related methods.
+
+### `tasks completed --from --to` paginates client-side
+
+The library's statistics endpoint returns HTTP 500 for any date window, so we fetch via the iterator endpoint and filter by completion time locally. Fast enough for typical 7-30 day windows. Slower (and makes multiple round trips) if you scan year-long ranges on a very active account.
+
+### Untested in v1.3 smoke
+
+Smoke testing ran out of budget before covering these features end-to-end. They're wired and typecheck-clean but not yet verified against live TickTick:
+
+- `tags merge`, `tags delete`
+- `projects create`, `projects update`, `projects delete`
+- `tasks restore`
+
+If one of these returns `ok: true` but the effect doesn't materialize in your TickTick UI, let Athena know — she'll run a focused probe to identify whether it's an upstream library quirk and either fix it in the adapter or document the limitation.
+
 ## Setup
 
 ```bash
