@@ -16,6 +16,10 @@ description: TickTick task and list management — create, list, update, complet
 | "move task X to list Y" | → `Workflows/MoveTask.md` |
 | "what lists do I have / show me my projects" | → `Workflows/ListProjects.md` |
 | "login to ticktick / am I logged in / logout" | → `Workflows/Auth.md` |
+| "create a section / add a kanban column to X" | → `Workflows/CreateSection.md` |
+| "rename the X section / rename column X to Y" | → `Workflows/RenameSection.md` |
+| "delete the X section / remove the kanban column X" | → `Workflows/DeleteSection.md` |
+| "move section X before Y / reorder my columns" | → `Workflows/ReorderSection.md` |
 
 ## Customization
 
@@ -47,8 +51,11 @@ If a `PREFERENCES.md` file exists there, load and apply it. Typical overrides: d
 
 **Supported in v1:**
 - ✅ Tasks: list (with filters), get, create, update, complete, delete, move between lists
+- ✅ Tasks: filter by project, status, due window, tag, **section**, **assignee**, limit
 - ✅ Projects (lists): list, get
 - ✅ Tags: list
+- ✅ **Sections (kanban columns)**: list, create, rename, delete (with optional `--reassign`), move (reorder)
+- ✅ Members of shared projects: list, remove
 - ✅ **Checklist items** inside a task: list, add, complete, delete
 - ✅ Automatic session refresh (silent re-login on 401/auth-expired)
 - ✅ Both JSON (default) and `--human` table output modes

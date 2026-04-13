@@ -10,9 +10,12 @@ Uses the **unofficial v2 TickTick API** (the same one the ticktick.com web app u
 |---|---|
 | Tasks — list / get / create / update / complete / delete | ✅ |
 | Tasks — move between lists | ✅ *(with caveat: returns new id; see below)* |
-| Tasks — filter by project, status, due window, tag, limit | ✅ |
+| Tasks — filter by project, status, due window, tag, section, assignee, limit | ✅ |
 | Projects (lists) — list / get | ✅ |
 | Tags — list | ✅ |
+| Sections (kanban columns) — list / create / rename / delete / reorder | ✅ |
+| Section delete with `--reassign` (move tasks to target section first) | ✅ |
+| Shared project members — list / remove | ✅ |
 | Checklist items inside a task — list / add / complete / delete | ✅ |
 | Automatic session refresh on 401/auth-expired | ✅ |
 | JSON output (default) and `--human` table output | ✅ |
