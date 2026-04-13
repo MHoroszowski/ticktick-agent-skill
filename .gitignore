@@ -3,3 +3,9 @@ node_modules/
 *.log
 dist/
 bun.lockb
+
+# Agent worktrees from Engineer subagents with isolation: worktree.
+# Each is a git-worktree checkout of a feature branch, created ad hoc
+# during merge/dev work. Kept out of tracking so `git status` stays
+# clean even when worktrees are in flight.
+.claude/
