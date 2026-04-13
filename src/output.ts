@@ -11,6 +11,7 @@
 
 import { AdapterError, UsageError, mapLibraryError } from './errors.ts';
 import { getCachedUsers } from './users.ts';
+import { formatTriggerOffset } from './reminders.ts';
 import type { Task, Project, ChecklistItem } from './adapter.ts';
 
 let debugEnabled = false;
@@ -68,10 +69,16 @@ function buildErrorEnvelope(
 // Human table formatters (no external deps)
 // ──────────────────────────────────────────────────────────────────
 
+const REMINDERS_CELL_WIDTH = 12;
+
 export function formatTasksTable(tasks: readonly Task[]): string {
   if (tasks.length === 0) return '(no tasks)';
   const knownUsers = getCachedUsers();
   const anyAssigned = tasks.some((t) => t.assignee !== null);
+  // Only show the 🔔 reminders column when at least one task actually
+  // has a reminder — same conditional pattern as the assignee column.
+  // Keeps the default narrow table uncluttered for the common case.
+  const anyReminders = tasks.some((t) => t.reminders.length > 0);
 
   const rows = tasks.map((t) => ({
     id: shortenId(t.id),
@@ -79,9 +86,24 @@ export function formatTasksTable(tasks: readonly Task[]): string {
     pri: priorityGlyph(t.priority),
     due: formatDue(t.dueDate),
     assignee: anyAssigned ? resolveAssigneeName(t.assignee, knownUsers) : null,
+    reminders: anyReminders ? formatRemindersCompact(t.reminders) : null,
     title: truncate(t.title, 50),
     project: shortenId(t.projectId),
   }));
+
+  const REMIND_W = REMINDERS_CELL_WIDTH;
+
+  if (anyAssigned && anyReminders) {
+    const header = `${'ID'.padEnd(9)} ${'STATUS'.padEnd(10)} ${'PRI'} ${'DUE'.padEnd(16)} ${'ASSIGN'.padEnd(10)} ${'🔔'.padEnd(REMIND_W)} ${'TITLE'.padEnd(40)} ${'PROJECT'}`;
+    const divider = '─'.repeat(Math.min(120, header.length));
+    const body = rows
+      .map(
+        (r) =>
+          `${r.id.padEnd(9)} ${r.status} ${r.pri.padEnd(3)} ${r.due.padEnd(16)} ${(r.assignee ?? '—').padEnd(10)} ${(r.reminders ?? '').padEnd(REMIND_W)} ${truncate(r.title, 40).padEnd(40)} ${r.project}`,
+      )
+      .join('\n');
+    return `${header}\n${divider}\n${body}`;
+  }
 
   if (anyAssigned) {
     const header = `${'ID'.padEnd(9)} ${'STATUS'.padEnd(10)} ${'PRI'} ${'DUE'.padEnd(16)} ${'ASSIGN'.padEnd(10)} ${'TITLE'.padEnd(45)} ${'PROJECT'}`;
@@ -90,6 +112,18 @@ export function formatTasksTable(tasks: readonly Task[]): string {
       .map(
         (r) =>
           `${r.id.padEnd(9)} ${r.status} ${r.pri.padEnd(3)} ${r.due.padEnd(16)} ${(r.assignee ?? '—').padEnd(10)} ${truncate(r.title, 45).padEnd(45)} ${r.project}`,
+      )
+      .join('\n');
+    return `${header}\n${divider}\n${body}`;
+  }
+
+  if (anyReminders) {
+    const header = `${'ID'.padEnd(9)} ${'STATUS'.padEnd(10)} ${'PRI'} ${'DUE'.padEnd(16)} ${'🔔'.padEnd(REMIND_W)} ${'TITLE'.padEnd(45)} ${'PROJECT'}`;
+    const divider = '─'.repeat(Math.min(110, header.length));
+    const body = rows
+      .map(
+        (r) =>
+          `${r.id.padEnd(9)} ${r.status} ${r.pri.padEnd(3)} ${r.due.padEnd(16)} ${(r.reminders ?? '').padEnd(REMIND_W)} ${truncate(r.title, 45).padEnd(45)} ${r.project}`,
       )
       .join('\n');
     return `${header}\n${divider}\n${body}`;
@@ -104,6 +138,29 @@ export function formatTasksTable(tasks: readonly Task[]): string {
     )
     .join('\n');
   return `${header}\n${divider}\n${body}`;
+}
+
+/**
+ * Render a reminders[] array as a compact cell value for the table (e.g.
+ * `15m,1d`). Gracefully truncates with a trailing `+N` if the cell would
+ * exceed the cell width — keeps row alignment stable when a task has
+ * many reminders.
+ */
+function formatRemindersCompact(reminders: readonly string[]): string {
+  if (reminders.length === 0) return '';
+  const parts = reminders.map(formatTriggerOffset);
+  const out = parts.join(',');
+  if (out.length <= REMINDERS_CELL_WIDTH) return out;
+  let i = 0;
+  let acc = '';
+  while (i < parts.length) {
+    const next = acc.length === 0 ? parts[i]! : `${acc},${parts[i]!}`;
+    if (next.length + 3 > REMINDERS_CELL_WIDTH) break; // leave room for "+N"
+    acc = next;
+    i += 1;
+  }
+  const overflow = parts.length - i;
+  return overflow > 0 ? `${acc}+${overflow}` : acc;
 }
 
 function resolveAssigneeName(

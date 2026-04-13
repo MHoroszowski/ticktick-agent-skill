@@ -131,8 +131,26 @@ async function routeTasks(argv: readonly string[], opts: GlobalOpts): Promise<vo
       return tasks.remove(rest, opts);
     case 'move':
       return tasks.move(rest, opts);
+    case 'remind':
+      return routeTasksRemind(rest, opts);
     default:
       throw new UsageError(`Unknown tasks subcommand: ${sub}`);
+  }
+}
+
+async function routeTasksRemind(argv: readonly string[], opts: GlobalOpts): Promise<void> {
+  const [sub, ...rest] = argv;
+  switch (sub) {
+    case 'add':
+      return tasks.remindAdd(rest, opts);
+    case 'remove':
+      return tasks.remindRemove(rest, opts);
+    case 'clear':
+      return tasks.remindClear(rest, opts);
+    default:
+      throw new UsageError(
+        `Unknown 'tasks remind' subcommand: ${sub ?? '(none)'}. Expected: add, remove, clear.`,
+      );
   }
 }
 
@@ -274,6 +292,48 @@ export function parseCommandArgs(argv: readonly string[]): {
 }
 
 /**
+ * Collect every occurrence of a repeated flag, in order. Used by flags
+ * that should accept either repeated `--key v1 --key v2` form OR
+ * comma-separated `--key v1,v2` form (or both mixed). The returned array
+ * is the union of all values, with empty entries skipped.
+ *
+ * Examples:
+ *   --remind 15m --remind 1d        → ['15m', '1d']
+ *   --remind 15m,1d                 → ['15m', '1d']
+ *   --remind 15m,1h --remind 1d     → ['15m', '1h', '1d']
+ *
+ * Why a separate scan instead of using parseCommandArgs(): the existing
+ * parser collapses repeated keys into a single Record<string,string>,
+ * which is fine for flags like `--title` but loses information for
+ * `--remind`. We scan argv twice rather than complicate the main parser
+ * — adding multi-valued flag plumbing to parseCommandArgs would touch
+ * every existing handler.
+ */
+export function collectRepeatedFlag(argv: readonly string[], name: string): readonly string[] {
+  const key = `--${name}`;
+  const out: string[] = [];
+  for (let i = 0; i < argv.length; i++) {
+    const token = argv[i]!;
+    let raw: string | undefined;
+    if (token === key) {
+      const next = argv[i + 1];
+      if (next !== undefined && !next.startsWith('--')) {
+        raw = next;
+        i += 1;
+      }
+    } else if (token.startsWith(`${key}=`)) {
+      raw = token.slice(key.length + 1);
+    }
+    if (raw === undefined) continue;
+    for (const piece of raw.split(',')) {
+      const trimmed = piece.trim();
+      if (trimmed.length > 0) out.push(trimmed);
+    }
+  }
+  return out;
+}
+
+/**
  * Require a specific flag from a parsed flags object; throws UsageError if missing.
  */
 export function requireFlag(
@@ -322,8 +382,16 @@ COMMANDS
     --project <id|name> --content <md>
     --due <ISO> --priority none|low|medium|high
     --tags a,b,c --section <id|name> --assignee me|<id>|<name>
+    --remind <offset>                      time-based reminder, repeatable
+                                           or CSV. Formats: at-start, 15m,
+                                           1h, 1d, 1d9h, or raw TRIGGER:...
+                                           Requires --due.
   tasks update --id <id> --project <pid> [flags]
-                                           Update a task (same optional fields)
+                                           Update a task (same optional fields).
+                                           --remind REPLACES all existing
+                                           reminders (use 'tasks remind add'
+                                           to append, 'tasks remind clear'
+                                           to remove all).
   tasks complete --id <id> [--project <pid>]
                                            Mark a task done
   tasks delete --id <id> [--project <pid>]
@@ -331,6 +399,12 @@ COMMANDS
   tasks move --id <id> --to <id|name> [--from <pid>]
                                            Move to a different list.
                                            ⚠️ returns a NEW task id (copy+delete)
+  tasks remind add --id <id> --offset <off> [--project <pid>]
+                                           Append a reminder to an existing task.
+  tasks remind remove --id <id> --offset <off> [--project <pid>]
+                                           Remove a specific reminder by offset.
+  tasks remind clear --id <id> [--project <pid>]
+                                           Remove all reminders from a task.
 
   projects list                            List all projects
   projects get --id <id|name>              Fetch one project
