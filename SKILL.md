@@ -28,6 +28,10 @@ description: TickTick task and list management — create, list, update, complet
 | "rename tag X to Y" | → `Workflows/RenameTag.md` |
 | "merge tag X into Y" | → `Workflows/MergeTags.md` |
 | "login to ticktick / am I logged in / logout" | → `Workflows/Auth.md` |
+| "create a section / add a kanban column to X" | → `Workflows/CreateSection.md` |
+| "rename the X section / rename column X to Y" | → `Workflows/RenameSection.md` |
+| "delete the X section / remove the kanban column X" | → `Workflows/DeleteSection.md` |
+| "move section X before Y / reorder my columns" | → `Workflows/ReorderSection.md` |
 
 ## Customization
 
@@ -62,12 +66,12 @@ If a `PREFERENCES.md` file exists there, load and apply it. Typical overrides: d
 - ✅ Tasks: pin / unpin / restore (restore requires explicit id — trash listing is broken upstream)
 - ✅ Tasks: bulk create / update / delete / complete (JSON file or comma-separated id list)
 - ✅ Tasks: recurring end date (`--repeat-end <ISO>`) on create and update
-- ✅ Tasks: smart-list filters — `--due today|tomorrow|overdue|week|next7days|none`, `--pinned`
+- ✅ Tasks: smart-list filters — `--due today|tomorrow|overdue|week|next7days|none`, `--pinned`, `--section`, `--assignee`
 - ✅ Tasks: completed-task listing — paginated iterator mode OR closed date-range mode
 - ✅ Tasks: `--section` / `--assignee` on create and update (shared lists)
 - ✅ Projects (lists): list, get, create, update, delete (delete requires `--confirm`)
-- ✅ Tags: list, create, update, delete, rename, merge
-- ✅ Sections (kanban columns): list (read-only in v1.3)
+- ✅ Tags: list, create, update, delete, rename, merge *(see Known quirks — only list + create actually persist)*
+- ✅ Sections (kanban columns): list, create, rename, delete (with optional `--reassign` to move tasks first), reorder
 - ✅ Shared-list members: list, remove (remove is dry-run by default; `--force` to commit)
 - ✅ **Checklist items** inside a task: list, add, complete, delete
 - ✅ Automatic session refresh (silent re-login on 401/auth-expired)
@@ -75,7 +79,6 @@ If a `PREFERENCES.md` file exists there, load and apply it. Typical overrides: d
 
 **Known limitations — NOT in v1.3:**
 - ❌ **Nested subtasks** — TickTick has two "subtask" concepts: checklist items (supported here) and true nested child tasks with their own due dates, priorities, and tags (NOT supported). The underlying `ticktick-client` library does not expose `parentId`-based nesting. Tracked as a follow-up requiring reverse-engineering of TickTick v2 endpoints. See `README.md`.
-- ❌ Sections create / rename / delete / reorder (list is read-only in v1.3; CRUD deferred to v1.4)
 - ❌ Reminders (time-based or location) — deferred to v1.4
 - ❌ Focus sessions, habits, calendar, countdowns
 - ❌ 2FA / MFA accounts (library does not support the 2FA login flow)

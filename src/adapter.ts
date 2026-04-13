@@ -10,6 +10,7 @@
  * from upstream field renames.
  */
 
+import { randomBytes } from 'node:crypto';
 import {
   TickTickClient,
   FileSessionStore,
@@ -187,6 +188,13 @@ export type TaskListFilters = {
   readonly due?: DueFilter;
   readonly pinned?: boolean;
   readonly limit?: number;
+  /** Filter to tasks whose `columnId` matches this section id. */
+  readonly sectionId?: string;
+  /**
+   * Filter to tasks whose numeric `assignee` matches. Null means "unassigned
+   * only" (tasks with no assignee). Omit to not filter by assignee.
+   */
+  readonly assignee?: number | null;
 };
 
 /**
@@ -309,6 +317,44 @@ export interface TickTickAdapter {
   // client-side.
   listSections(projectId: string): Promise<readonly Section[]>;
 
+  /**
+   * Create a new section (kanban column) in the given project. Uses the
+   * batch-envelope `POST /api/v2/column` endpoint with `add[]`. The client
+   * supplies the 24-char hex id — the server echoes it back as the
+   * canonical id via `id2etag`. If `sortOrder` is omitted, a large value is
+   * picked that sorts the new section at the end.
+   *
+   * Discovered April 2026 via API probing; not exposed by ticktick-client.
+   * See PLAN_02 discovery results in MEMORY/WORK/...
+   */
+  createSection(projectId: string, name: string, sortOrder?: number): Promise<Section>;
+
+  /**
+   * Rename an existing section. Uses the batch-envelope `update[]` path.
+   * Update is a full-record REPLACE, not a patch — the adapter fetches the
+   * current sortOrder first so it is preserved across the rename.
+   */
+  renameSection(projectId: string, sectionId: string, newName: string): Promise<Section>;
+
+  /**
+   * Delete a section. Uses the batch-envelope `delete[]` path with
+   * `{projectId, columnId}` entries (NOT bare ids — wrong shape returns 500).
+   *
+   * TickTick orphans tasks in the deleted section: they remain in the
+   * project with `columnId` cleared. No server-side "reassign" parameter
+   * exists — callers that want tasks moved to another section should update
+   * those tasks FIRST, then call this method.
+   */
+  deleteSection(projectId: string, sectionId: string): Promise<void>;
+
+  /**
+   * Change a section's sortOrder in place. Uses the same `update[]`
+   * envelope as rename — name is preserved. TickTick uses large integer
+   * gaps (often 2^16 multiples) for insertion; callers should pick a
+   * midpoint between neighbors rather than sequential integers.
+   */
+  reorderSection(projectId: string, sectionId: string, sortOrder: number): Promise<Section>;
+
   // Checklist items (v1: what jaeyeonling/ticktick-client supports).
   // NOTE: Nested subtasks (parentId-based child tasks) are NOT yet supported.
   // Tracked as follow-up — see README.
@@ -392,6 +438,15 @@ export class TickTickClientAdapter implements TickTickAdapter {
       tasks = tasks.filter((t) =>
         filters.pinned ? t.pinnedAt !== null : t.pinnedAt === null,
       );
+    }
+
+    if (filters?.sectionId !== undefined) {
+      tasks = tasks.filter((t) => t.columnId === filters.sectionId);
+    }
+
+    if (filters?.assignee !== undefined) {
+      const wanted = filters.assignee;
+      tasks = tasks.filter((t) => t.assignee === wanted);
     }
 
     if (filters?.limit !== undefined && filters.limit >= 0) {
@@ -726,6 +781,175 @@ export class TickTickClientAdapter implements TickTickAdapter {
   }
 
   // ── Sections (kanban columns) ──
+  //
+  // The four mutating methods below all hit `POST /api/v2/column` with the
+  // same batch-envelope body shape `{add, update, delete}` — the same
+  // envelope TickTick uses for `/api/v2/batch/task`. No `/api/v2/batch/column`
+  // endpoint exists (returns 404). Discovered April 2026 by API probing
+  // against the live account. See PLAN_02 discovery results for the raw
+  // captures and surprises.
+  //
+  // Critical gotchas burned in:
+  //   * Create: client supplies the 24-char hex id; server echoes it via
+  //     id2etag. No server-side id substitution.
+  //   * Update/rename/reorder: full-record REPLACE, not a patch. Must send
+  //     name + projectId + sortOrder together or omitted fields clobber to
+  //     defaults.
+  //   * Delete entries are `{projectId, columnId}` objects — NOT bare ids,
+  //     NOT `{id, projectId}`. Wrong shape → HTTP 500 (server crashes,
+  //     doesn't validate).
+  //   * Delete orphans tasks in the column (columnId cleared, tasks remain).
+  //     No `--reassign` server-side — callers implement two-step.
+
+  async createSection(
+    projectId: string,
+    name: string,
+    sortOrder?: number,
+  ): Promise<Section> {
+    const id = generateColumnId();
+    // Default sortOrder: pick a value larger than any existing section so
+    // the new one lands at the end. TickTick uses huge gaps (2^16 multiples)
+    // so we use a similar shape. If the project has no sections, start at 0.
+    let effectiveSort: number;
+    if (typeof sortOrder === 'number') {
+      effectiveSort = sortOrder;
+    } else {
+      const existing = await this.listSections(projectId);
+      if (existing.length === 0) {
+        effectiveSort = 0;
+      } else {
+        const max = existing.reduce<number>(
+          (m, s) => (typeof s.sortOrder === 'number' && s.sortOrder > m ? s.sortOrder : m),
+          Number.NEGATIVE_INFINITY,
+        );
+        effectiveSort = (Number.isFinite(max) ? max : 0) + (1 << 16);
+      }
+    }
+
+    const body = {
+      add: [{ id, name, projectId, sortOrder: effectiveSort }],
+      update: [],
+      delete: [],
+    };
+    const resp = await this.#columnBatch(body);
+    this.#throwIfBatchError(resp, `createSection(${name})`);
+
+    return { id, projectId, name, sortOrder: effectiveSort };
+  }
+
+  async renameSection(
+    projectId: string,
+    sectionId: string,
+    newName: string,
+  ): Promise<Section> {
+    // Update is a full-record replace — fetch current sortOrder so it is
+    // preserved across the rename (omitted fields get clobbered to defaults).
+    const current = await this.#getSectionOrThrow(projectId, sectionId);
+
+    const body = {
+      add: [],
+      update: [
+        {
+          id: sectionId,
+          name: newName,
+          projectId,
+          sortOrder: current.sortOrder ?? 0,
+        },
+      ],
+      delete: [],
+    };
+    const resp = await this.#columnBatch(body);
+    this.#throwIfBatchError(resp, `renameSection(${sectionId})`);
+
+    return {
+      id: sectionId,
+      projectId,
+      name: newName,
+      sortOrder: current.sortOrder,
+    };
+  }
+
+  async deleteSection(projectId: string, sectionId: string): Promise<void> {
+    const body = {
+      add: [],
+      update: [],
+      // ⚠️ The delete entry is {projectId, columnId} — NOT a bare id string,
+      // NOT {id, projectId}. Both wrong shapes return HTTP 500 (the server
+      // crashes rather than validates). Discovered April 2026 the hard way.
+      delete: [{ projectId, columnId: sectionId }],
+    };
+    const resp = await this.#columnBatch(body);
+    this.#throwIfBatchError(resp, `deleteSection(${sectionId})`);
+  }
+
+  async reorderSection(
+    projectId: string,
+    sectionId: string,
+    sortOrder: number,
+  ): Promise<Section> {
+    // Reorder uses the same update[] path as rename. Full-record replace —
+    // fetch the current name so it survives the update.
+    const current = await this.#getSectionOrThrow(projectId, sectionId);
+
+    const body = {
+      add: [],
+      update: [
+        {
+          id: sectionId,
+          name: current.name,
+          projectId,
+          sortOrder,
+        },
+      ],
+      delete: [],
+    };
+    const resp = await this.#columnBatch(body);
+    this.#throwIfBatchError(resp, `reorderSection(${sectionId})`);
+
+    return { id: sectionId, projectId, name: current.name, sortOrder };
+  }
+
+  // ── Section batch helpers (private) ──
+
+  async #columnBatch(body: unknown): Promise<ColumnBatchResponse> {
+    const client = this.#client as unknown as {
+      request: <T>(method: string, path: string, body?: unknown) => Promise<T>;
+    };
+    const raw = await client.request<unknown>('POST', '/api/v2/column', body);
+    // Defensive normalization — on success the shape is
+    // `{id2etag: {...}, id2error: {}}`.
+    const r = (raw ?? {}) as Partial<ColumnBatchResponse>;
+    return {
+      id2etag: (r.id2etag ?? {}) as Record<string, string>,
+      id2error: (r.id2error ?? {}) as Record<string, string>,
+    };
+  }
+
+  #throwIfBatchError(resp: ColumnBatchResponse, context: string): void {
+    const errors = Object.entries(resp.id2error);
+    if (errors.length === 0) return;
+    const summary = errors.map(([id, msg]) => `${id}: ${msg}`).join('; ');
+    throw new AdapterError(
+      'NETWORK',
+      `${context} reported errors from TickTick batch endpoint: ${summary}`,
+    );
+  }
+
+  async #getSectionOrThrow(
+    projectId: string,
+    sectionId: string,
+  ): Promise<Section> {
+    const sections = await this.listSections(projectId);
+    const match = sections.find((s) => s.id === sectionId);
+    if (!match) {
+      throw new AdapterError(
+        'NOT_FOUND',
+        `Section ${sectionId} not found in project ${projectId}.`,
+      );
+    }
+    return match;
+  }
+
   async listSections(projectId: string): Promise<readonly Section[]> {
     // The library's `client.projects.listColumns(projectId)` has two bugs:
     //   1. Returns `{update: Column[]}` wrapped instead of a bare array.
@@ -931,6 +1155,29 @@ type RawColumn = {
   readonly name: string;
   readonly sortOrder?: number;
 };
+
+/**
+ * Response envelope from `POST /api/v2/column` (batch create/update/delete).
+ * Mirrors the `/api/v2/batch/task` shape: `id2etag` maps the client-supplied
+ * (or echoed) column id to an 8-char etag on success; `id2error` maps id to
+ * a human-readable error string on per-entry failure. On total success both
+ * are present; id2error is empty.
+ */
+type ColumnBatchResponse = {
+  readonly id2etag: Record<string, string>;
+  readonly id2error: Record<string, string>;
+};
+
+/**
+ * Generate a 24-char hex id that TickTick will accept as a canonical column
+ * id in a batch create request. The server echoes the client-supplied id
+ * back in `id2etag` — no server-side substitution. Uses 12 random bytes
+ * (96 bits of entropy) which is well clear of collision risk for the handful
+ * of columns a user ever creates.
+ */
+function generateColumnId(): string {
+  return randomBytes(12).toString('hex');
+}
 
 function normalizeSection(raw: RawColumn): Section {
   return {

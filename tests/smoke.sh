@@ -228,6 +228,138 @@ echo "$REMOVE_DRY_OUTPUT" | grep -q "Confirmation required" \
   || fail "dry-run output didn't mention confirmation/force. output: $REMOVE_DRY_OUTPUT"
 ok "dry-run correctly aborted without --force"
 
+# ─── 18a. sections CRUD lifecycle (against TEST project) ───
+# Full create → rename → reorder → delete (with --reassign) cycle on the
+# solo TEST project. Idempotent: every section we create here gets cleaned
+# up at the end, even on failure.
+log "Step 18a: sections CRUD lifecycle on $TEST_PROJECT"
+
+# Track ids we create so the trap can clean them up if the test bails.
+SMOKE_SECTION_A=""
+SMOKE_SECTION_B=""
+SMOKE_SECTION_TASK=""
+cleanup_sections() {
+  set +e
+  if [ -n "$SMOKE_SECTION_TASK" ]; then
+    "$TICKTICK" tasks delete --id "$SMOKE_SECTION_TASK" --project "$PROJECT_ID" >/dev/null 2>&1
+  fi
+  if [ -n "$SMOKE_SECTION_A" ]; then
+    "$TICKTICK" sections delete --project "$PROJECT_ID" --section "$SMOKE_SECTION_A" --confirm >/dev/null 2>&1
+  fi
+  if [ -n "$SMOKE_SECTION_B" ]; then
+    "$TICKTICK" sections delete --project "$PROJECT_ID" --section "$SMOKE_SECTION_B" --confirm >/dev/null 2>&1
+  fi
+  set -e
+}
+trap cleanup_sections EXIT
+
+# Create
+SECTION_A_JSON="$("$TICKTICK" sections create --project "$PROJECT_ID" --name "Smoke Section A")"
+echo "$SECTION_A_JSON" | jq -e '.ok == true and .section.id != null and .section.name == "Smoke Section A"' >/dev/null \
+  || fail "sections create A failed: $SECTION_A_JSON"
+SMOKE_SECTION_A="$(echo "$SECTION_A_JSON" | jq -r '.section.id')"
+ok "created section A id=$SMOKE_SECTION_A"
+
+SECTION_B_JSON="$("$TICKTICK" sections create --project "$PROJECT_ID" --name "Smoke Section B" --after "$SMOKE_SECTION_A")"
+echo "$SECTION_B_JSON" | jq -e '.ok == true and .section.id != null' >/dev/null \
+  || fail "sections create B failed: $SECTION_B_JSON"
+SMOKE_SECTION_B="$(echo "$SECTION_B_JSON" | jq -r '.section.id')"
+ok "created section B id=$SMOKE_SECTION_B (after A)"
+
+# List shows both
+SECTIONS_AFTER_CREATE="$("$TICKTICK" sections list --project "$PROJECT_ID")"
+LIST_HAS_BOTH="$(echo "$SECTIONS_AFTER_CREATE" | jq --arg a "$SMOKE_SECTION_A" --arg b "$SMOKE_SECTION_B" '[.sections[].id] | (index($a) != null) and (index($b) != null)')"
+[ "$LIST_HAS_BOTH" = "true" ] \
+  || fail "sections list does not contain both new sections: $SECTIONS_AFTER_CREATE"
+ok "sections list shows both new sections"
+
+# Rename A
+RENAME_JSON="$("$TICKTICK" sections rename --project "$PROJECT_ID" --section "$SMOKE_SECTION_A" --to "Smoke Section A Renamed")"
+echo "$RENAME_JSON" | jq -e '.ok == true and .section.name == "Smoke Section A Renamed"' >/dev/null \
+  || fail "sections rename failed: $RENAME_JSON"
+ok "renamed section A"
+
+# Reorder: move B before A
+MOVE_JSON="$("$TICKTICK" sections move --project "$PROJECT_ID" --section "$SMOKE_SECTION_B" --before "$SMOKE_SECTION_A")"
+echo "$MOVE_JSON" | jq -e '.ok == true and .section.id != null' >/dev/null \
+  || fail "sections move failed: $MOVE_JSON"
+# Verify B's sortOrder is now less than A's
+SECTIONS_AFTER_MOVE="$("$TICKTICK" sections list --project "$PROJECT_ID")"
+A_ORDER="$(echo "$SECTIONS_AFTER_MOVE" | jq --arg a "$SMOKE_SECTION_A" '.sections[] | select(.id == $a) | .sortOrder')"
+B_ORDER="$(echo "$SECTIONS_AFTER_MOVE" | jq --arg b "$SMOKE_SECTION_B" '.sections[] | select(.id == $b) | .sortOrder')"
+[ -n "$A_ORDER" ] && [ -n "$B_ORDER" ] && [ "$B_ORDER" -lt "$A_ORDER" ] \
+  || fail "after move, expected B.sortOrder ($B_ORDER) < A.sortOrder ($A_ORDER)"
+ok "reorder put B (sortOrder=$B_ORDER) before A (sortOrder=$A_ORDER)"
+
+# Create a task IN section A so we can test --reassign
+TASK_IN_A_JSON="$("$TICKTICK" tasks create --title "PAI smoke section task" --project "$PROJECT_ID" --section "$SMOKE_SECTION_A")"
+echo "$TASK_IN_A_JSON" | jq -e ".ok == true and .task.columnId == \"$SMOKE_SECTION_A\"" >/dev/null \
+  || fail "create task in section A failed or columnId mismatch: $TASK_IN_A_JSON"
+SMOKE_SECTION_TASK="$(echo "$TASK_IN_A_JSON" | jq -r '.task.id')"
+ok "created task $SMOKE_SECTION_TASK in section A"
+
+# tasks list --section filters correctly
+SECTION_FILTER_JSON="$("$TICKTICK" tasks list --project "$PROJECT_ID" --section "$SMOKE_SECTION_A")"
+SECTION_FILTER_HAS_TASK="$(echo "$SECTION_FILTER_JSON" | jq --arg t "$SMOKE_SECTION_TASK" '[.tasks[].id] | index($t) != null')"
+[ "$SECTION_FILTER_HAS_TASK" = "true" ] \
+  || fail "tasks list --section did not return the task we just created in that section: $SECTION_FILTER_JSON"
+ok "tasks list --section returns the task in section A"
+
+# tasks list --assignee me works (returns the assignee test task — but we
+# already deleted that, so just verify it doesn't error and the count is
+# >= 0). Better: create a fresh assigned task, query, then clean up.
+ASSIGNEE_FILTER_TASK_JSON="$("$TICKTICK" tasks create --title "PAI smoke assignee filter" --project "$PROJECT_ID" --assignee me)"
+echo "$ASSIGNEE_FILTER_TASK_JSON" | jq -e '.ok == true' >/dev/null \
+  || fail "create-with-assignee for filter test failed: $ASSIGNEE_FILTER_TASK_JSON"
+ASSIGNEE_FILTER_TASK_ID="$(echo "$ASSIGNEE_FILTER_TASK_JSON" | jq -r '.task.id')"
+ASSIGNEE_LIST_JSON="$("$TICKTICK" tasks list --project "$PROJECT_ID" --assignee me)"
+ASSIGNEE_LIST_HAS_TASK="$(echo "$ASSIGNEE_LIST_JSON" | jq --arg t "$ASSIGNEE_FILTER_TASK_ID" '[.tasks[].id] | index($t) != null')"
+[ "$ASSIGNEE_LIST_HAS_TASK" = "true" ] \
+  || fail "tasks list --assignee me did not return the freshly-assigned task: $ASSIGNEE_LIST_JSON"
+"$TICKTICK" tasks delete --id "$ASSIGNEE_FILTER_TASK_ID" --project "$PROJECT_ID" >/dev/null \
+  || fail "cleanup of assignee filter task failed"
+ok "tasks list --assignee me returns the assigned task"
+
+# Dry-run delete (no --confirm) should refuse and exit non-zero
+set +e
+DRY_DELETE_OUTPUT="$("$TICKTICK" sections delete --project "$PROJECT_ID" --section "$SMOKE_SECTION_A" 2>&1)"
+DRY_DELETE_EXIT=$?
+set -e
+[ $DRY_DELETE_EXIT -ne 0 ] \
+  || fail "sections delete without --confirm should have errored, exit=$DRY_DELETE_EXIT"
+echo "$DRY_DELETE_OUTPUT" | grep -q -- "--confirm" \
+  || fail "dry-run output didn't mention --confirm: $DRY_DELETE_OUTPUT"
+ok "sections delete dry-run safety gate fires correctly"
+
+# Real delete A with --reassign B → task should now be in B
+DELETE_A_JSON="$("$TICKTICK" sections delete --project "$PROJECT_ID" --section "$SMOKE_SECTION_A" --reassign "$SMOKE_SECTION_B" --confirm)"
+echo "$DELETE_A_JSON" | jq -e '.ok == true and .reassignedTaskCount >= 1' >/dev/null \
+  || fail "sections delete --reassign failed or task count wrong: $DELETE_A_JSON"
+# Verify the task moved to B
+TASK_AFTER_REASSIGN_JSON="$("$TICKTICK" tasks get --id "$SMOKE_SECTION_TASK")"
+TASK_NEW_COL="$(echo "$TASK_AFTER_REASSIGN_JSON" | jq -r '.task.columnId // empty')"
+[ "$TASK_NEW_COL" = "$SMOKE_SECTION_B" ] \
+  || fail "after --reassign, task columnId is '$TASK_NEW_COL', expected '$SMOKE_SECTION_B'"
+ok "deleted section A and reassigned task to B"
+
+# Mark A as cleaned up (so the trap doesn't try again).
+SMOKE_SECTION_A=""
+
+# Delete section B (no reassign — task gets orphaned, that's fine, we'll
+# clean it up explicitly).
+"$TICKTICK" sections delete --project "$PROJECT_ID" --section "$SMOKE_SECTION_B" --confirm >/dev/null \
+  || fail "sections delete B failed"
+SMOKE_SECTION_B=""
+ok "deleted section B"
+
+"$TICKTICK" tasks delete --id "$SMOKE_SECTION_TASK" --project "$PROJECT_ID" >/dev/null \
+  || fail "cleanup of section task failed"
+SMOKE_SECTION_TASK=""
+ok "cleaned up section task"
+
+# Disarm the cleanup trap — everything is gone.
+trap - EXIT
+
 # ─── 18. session auto-refresh ───
 log "Step 18: session auto-refresh (corrupt session → whoami should silently re-login)"
 if [ -f "$SESSION_FILE" ]; then

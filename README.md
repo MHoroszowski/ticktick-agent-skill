@@ -14,13 +14,14 @@ Uses the **unofficial v2 TickTick API** (the same one the ticktick.com web app u
 | Tasks — bulk create / update / delete / complete | ✅ |
 | Tasks — recurring end date (`--repeat-end <ISO>`) | ✅ |
 | Tasks — completed-task listing (paginated iterator OR statistics range) | ✅ |
-| Tasks — filter by project, status, due window, tag, limit | ✅ |
+| Tasks — filter by project, status, due window, tag, section, assignee, limit | ✅ |
 | Tasks — smart-list filters (`today` / `tomorrow` / `overdue` / `week` / `next7days` / `none` / `--pinned`) | ✅ |
 | Tasks — `--section` (kanban column) on create and update | ✅ |
 | Tasks — `--assignee` (shared-list assignment) on create and update | ✅ |
 | Projects (lists) — list / get / create / update / delete | ✅ *(delete requires `--confirm`)* |
-| Tags — list / create / update / delete / rename / merge | ✅ |
-| Sections (kanban columns) — list (read-only) | ✅ |
+| Tags — list / create | ✅ |
+| Tags — update / rename / merge / delete | ⚠️ *(CLI returns ok but tags write-module is broken upstream — see Known quirks)* |
+| Sections (kanban columns) — list / create / rename / delete / reorder | ✅ *(delete requires `--confirm`; supports `--reassign` to move tasks)* |
 | Shared-list members — list / remove | ✅ *(remove is dry-run by default; `--force` to commit)* |
 | Checklist items inside a task — list / add / complete / delete | ✅ |
 | Automatic session refresh on 401/auth-expired | ✅ |
@@ -36,7 +37,6 @@ This is the largest intentional gap remaining. It's tracked as a follow-up — s
 
 **Other intentional gaps in v1.3:**
 
-- ❌ **Sections create / rename / delete / reorder** — `sections list` is supported (read-only) but CRUD is deferred to v1.4. Requires XHR capture because the `jaeyeonling/ticktick-client` library doesn't expose the column-mutation endpoints.
 - ❌ **Reminders (time-based or location)** — deferred to v1.4. The field exists in the raw API but the library strips it on read and ignores it on write.
 - ❌ **2FA / MFA accounts** — the library does not implement the 2FA login flow. Accounts with 2FA enabled will fail at login.
 - ❌ **Focus sessions, habits, calendar events, countdowns** — not exposed in this skill.
