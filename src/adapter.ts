@@ -560,25 +560,44 @@ export class TickTickClientAdapter implements TickTickAdapter {
 
   // ── Tasks: completed lookup ──
   async listCompletedTasks(opts: CompletedTaskOptions): Promise<readonly Task[]> {
-    // Two distinct backends:
-    //   • from+to → statistics.listCompleted (closed range, all projects)
-    //   • otherwise → tasks.iterateCompleted (paginated, optional project)
-    if (opts.from !== undefined && opts.to !== undefined) {
-      const limit = opts.limit ?? 100;
-      const raw = await this.#client.statistics.listCompleted(opts.from, opts.to, limit);
-      return raw.map(normalizeTask);
-    }
+    // Two surface modes, ONE backend:
+    //   • from+to  → iterator + client-side date filter on completedTime
+    //   • otherwise → iterator with optional project + limit
+    //
+    // Originally the from+to branch called `statistics.listCompleted` which
+    // hits `/api/v2/project/all/completed/` — that endpoint returns HTTP 500
+    // for any date window (confirmed 2026-04-13 against three date formats).
+    // The `tasks.iterateCompleted` endpoint `/api/v2/project/all/closed` is
+    // the known-good path; we post-filter to the requested window.
+    const limit = opts.limit ?? (opts.from && opts.to ? 100 : 50);
+    const fromMs = opts.from !== undefined ? Date.parse(opts.from) : undefined;
+    const toMs = opts.to !== undefined ? Date.parse(opts.to) : undefined;
 
-    const limit = opts.limit ?? 50;
     const collected: Task[] = [];
     const iter = this.#client.tasks.iterateCompleted({
       ...(opts.projectId !== undefined && { projectId: opts.projectId }),
     });
     for await (const page of iter) {
+      let sawOlderThanWindow = false;
       for (const raw of page) {
-        collected.push(normalizeTask(raw));
+        const task = normalizeTask(raw);
+        // Date-window filter (only when from/to are set). Tasks are
+        // returned newest-first by the closed endpoint, so once we see
+        // a task older than `from` we can stop iterating pages entirely.
+        if (fromMs !== undefined || toMs !== undefined) {
+          const completedAt = task.completedAt;
+          if (completedAt === null) continue;
+          const tMs = Date.parse(completedAt);
+          if (toMs !== undefined && tMs > toMs) continue;
+          if (fromMs !== undefined && tMs < fromMs) {
+            sawOlderThanWindow = true;
+            continue;
+          }
+        }
+        collected.push(task);
         if (collected.length >= limit) return collected;
       }
+      if (sawOlderThanWindow) break;
     }
     return collected;
   }
