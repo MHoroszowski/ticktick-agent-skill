@@ -1,0 +1,17 @@
+[
+  {
+    "title": "PAI bulk smoke A",
+    "projectId": "TEST - PAI Skill",
+    "priority": "low"
+  },
+  {
+    "title": "PAI bulk smoke B",
+    "projectId": "TEST - PAI Skill",
+    "priority": "medium"
+  },
+  {
+    "title": "PAI bulk smoke C",
+    "projectId": "TEST - PAI Skill",
+    "priority": "high"
+  }
+]
