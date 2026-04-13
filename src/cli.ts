@@ -131,6 +131,22 @@ async function routeTasks(argv: readonly string[], opts: GlobalOpts): Promise<vo
       return tasks.remove(rest, opts);
     case 'move':
       return tasks.move(rest, opts);
+    case 'pin':
+      return tasks.pin(rest, opts);
+    case 'unpin':
+      return tasks.unpin(rest, opts);
+    case 'restore':
+      return tasks.restore(rest, opts);
+    case 'create-many':
+      return tasks.createMany(rest, opts);
+    case 'update-many':
+      return tasks.updateMany(rest, opts);
+    case 'delete-many':
+      return tasks.deleteMany(rest, opts);
+    case 'complete-many':
+      return tasks.completeMany(rest, opts);
+    case 'completed':
+      return tasks.completed(rest, opts);
     default:
       throw new UsageError(`Unknown tasks subcommand: ${sub}`);
   }
@@ -144,6 +160,12 @@ async function routeProjects(argv: readonly string[], opts: GlobalOpts): Promise
       return projects.list(rest, opts);
     case 'get':
       return projects.get(rest, opts);
+    case 'create':
+      return projects.create(rest, opts);
+    case 'update':
+      return projects.update(rest, opts);
+    case 'delete':
+      return projects.remove(rest, opts);
     default:
       throw new UsageError(`Unknown projects subcommand: ${sub}`);
   }
@@ -155,6 +177,16 @@ async function routeTags(argv: readonly string[], opts: GlobalOpts): Promise<voi
     case undefined:
     case 'list':
       return tags.list(rest, opts);
+    case 'create':
+      return tags.create(rest, opts);
+    case 'update':
+      return tags.update(rest, opts);
+    case 'delete':
+      return tags.remove(rest, opts);
+    case 'rename':
+      return tags.rename(rest, opts);
+    case 'merge':
+      return tags.merge(rest, opts);
     default:
       throw new UsageError(`Unknown tags subcommand: ${sub}`);
   }
@@ -314,14 +346,17 @@ COMMANDS
   tasks list [flags]                       List tasks
     --project <id|name>                      filter by project
     --status open|completed|abandoned|all    filter by status (default: open)
-    --due today|overdue|week                 filter by due window
+    --due today|tomorrow|overdue|week|next7days|none
+                                             filter by due window
     --tag <name>                             filter by tag
+    --pinned                                 only pinned tasks
     --limit N                                cap result count
   tasks get --id <taskId>                  Fetch a single task
   tasks create --title <t> [flags]         Create a task
     --project <id|name> --content <md>
     --due <ISO> --priority none|low|medium|high
     --tags a,b,c --section <id|name> --assignee me|<id>|<name>
+    --repeat <RRULE> --repeat-end <ISO>
   tasks update --id <id> --project <pid> [flags]
                                            Update a task (same optional fields)
   tasks complete --id <id> [--project <pid>]
@@ -331,9 +366,26 @@ COMMANDS
   tasks move --id <id> --to <id|name> [--from <pid>]
                                            Move to a different list.
                                            ⚠️ returns a NEW task id (copy+delete)
+  tasks pin --id <id> [--project <pid>]    Pin a task to the top
+  tasks unpin --id <id> [--project <pid>]  Unpin a task
+  tasks restore --id <id> --project <pid>  Restore a deleted task (id required —
+                                           trash listing is broken upstream)
+  tasks completed [flags]                  List completed tasks
+    --project <id|name> --limit N            paginated iterator mode
+    --from <ISO> --to <ISO> [--limit N]      statistics range mode (mutex w/ --project)
+  tasks create-many --file <path.json>     Bulk-create tasks from a JSON array
+  tasks update-many --file <path.json>     Bulk-update (each entry needs id+projectId+title)
+  tasks delete-many --ids id1,id2,id3      Bulk-delete (project resolved per id)
+  tasks complete-many --ids id1,id2,id3    Bulk-complete (project resolved per id)
 
   projects list                            List all projects
   projects get --id <id|name>              Fetch one project
+  projects create --name <name> [flags]    Create a project
+    --color <#RRGGBB> --kind task|note --view list|kanban|timeline
+  projects update --id <id|name> [flags]   Update a project (--name/--color/--view/--kind)
+  projects delete --id <id|name> --confirm
+                                           Delete a project AND all its tasks.
+                                           --confirm is required.
 
   sections list --project <id|name>        List kanban sections (columns) in a project
 
@@ -344,6 +396,11 @@ COMMANDS
                                            --force to actually remove.
 
   tags list                                List all tags
+  tags create --name <slug> [flags]        Create a tag (--label, --color, --parent)
+  tags update --name <slug> [flags]        Update a tag (--label / --color / --parent)
+  tags delete --name <slug>                Delete a tag
+  tags rename --name <old> --to <new>      Rename a tag (slug-to-slug)
+  tags merge --from <a> --to <b>           Merge tag a into b (a is removed)
 
   checklist list --task <id>               List checklist items inside a task
   checklist add --task <id> --project <pid> --title <t>

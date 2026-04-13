@@ -22,7 +22,9 @@ import type {
   TickTickTaskDraft,
   TickTickTaskUpdate,
   TickTickProject,
+  TickTickProjectDraft,
   TickTickTag,
+  TickTickTagDraft,
   TickTickTaskItem,
   TickTickUserProfile,
   TickTickTaskPriority,
@@ -146,6 +148,11 @@ export type TaskDraft = {
   readonly tags?: readonly string[];
   readonly repeatFlag?: string | null;
   /**
+   * End date for a recurring task, ISO 8601. The library's TickTickTaskDraft
+   * type already includes this field — we pass it straight through.
+   */
+  readonly repeatEndDate?: string | null;
+  /**
    * Assign to a specific shared-project member by userId. Pass null to
    * explicitly clear assignment. Omit to leave untouched (on update) or
    * default to unassigned (on create).
@@ -160,13 +167,63 @@ export type TaskPatch = TaskDraft & {
   readonly projectId: string;
 };
 
+/**
+ * Smart-list due-date filters. Server has no such concept — every value
+ * here is implemented client-side over `client.tasks.list()`.
+ *
+ * - `today`     dueDate falls within the current local day
+ * - `tomorrow`  dueDate falls within the next local day
+ * - `overdue`   dueDate is strictly before now
+ * - `week`      dueDate is within the next 7 days from now (legacy alias)
+ * - `next7days` synonym for `week`, matches the natural-language workflow
+ * - `none`      task has no dueDate at all
+ */
+export type DueFilter = 'today' | 'tomorrow' | 'overdue' | 'week' | 'next7days' | 'none';
+
 export type TaskListFilters = {
   readonly projectId?: string;
   readonly status?: TaskStatus | 'all';
   readonly tag?: string;
-  readonly due?: 'today' | 'overdue' | 'week';
+  readonly due?: DueFilter;
+  readonly pinned?: boolean;
   readonly limit?: number;
 };
+
+/**
+ * Options for the unified completed-task lookup. Two mutually-exclusive
+ * shapes:
+ *   - `{ projectId?, limit? }`  → uses `tasks.iterateCompleted` (paginated
+ *     iterator, optionally scoped to a single project)
+ *   - `{ from, to, limit? }`    → uses `statistics.listCompleted` (closed
+ *     date range across all projects)
+ */
+export type CompletedTaskOptions = {
+  readonly projectId?: string;
+  readonly limit?: number;
+  readonly from?: string;
+  readonly to?: string;
+};
+
+export type TagDraft = {
+  /** Unique slug, lowercase. Used as the stable identifier in the API. */
+  readonly name: string;
+  /** Display label. Defaults to `name` if omitted. */
+  readonly label?: string;
+  /** `#RRGGBB` hex color. */
+  readonly color?: string;
+  /** Parent tag name, for hierarchical tags. Pass null to clear on update. */
+  readonly parent?: string | null;
+  readonly sortOrder?: number;
+};
+
+export type ProjectDraft = {
+  readonly name: string;
+  readonly color?: string;
+  readonly kind?: 'TASK' | 'NOTE';
+  readonly viewMode?: 'list' | 'kanban' | 'timeline';
+};
+
+export type ProjectPatch = ProjectDraft & { readonly id: string };
 
 export type MoveResult = {
   readonly task: Task;
@@ -198,9 +255,26 @@ export interface TickTickAdapter {
   deleteTask(taskId: string, projectId: string): Promise<void>;
   moveTask(taskId: string, fromProjectId: string, toProjectId: string): Promise<MoveResult>;
 
+  // Tasks — pin / unpin / restore
+  pinTask(taskId: string, projectId: string, date?: Date): Promise<void>;
+  unpinTask(taskId: string, projectId: string): Promise<void>;
+  restoreTask(taskId: string, projectId: string): Promise<void>;
+
+  // Tasks — bulk operations
+  createTasksBatch(drafts: readonly TaskDraft[]): Promise<void>;
+  updateTasksBatch(patches: readonly TaskPatch[]): Promise<void>;
+  deleteTasksBatch(items: readonly { taskId: string; projectId: string }[]): Promise<void>;
+  completeTasksBatch(items: readonly { taskId: string; projectId: string }[]): Promise<void>;
+
+  // Tasks — completed lookup (paginated iterator OR statistics range)
+  listCompletedTasks(opts: CompletedTaskOptions): Promise<readonly Task[]>;
+
   // Projects (lists)
   listProjects(): Promise<readonly Project[]>;
   getProject(idOrName: string): Promise<Project | null>;
+  createProject(draft: ProjectDraft): Promise<Project>;
+  updateProject(patch: ProjectPatch): Promise<void>;
+  deleteProject(projectId: string): Promise<void>;
 
   // Shared-project members. Hits the /api/v2/project/{id}/users endpoint
   // that the jaeyeonling library doesn't yet expose. Returns self only
@@ -223,6 +297,11 @@ export interface TickTickAdapter {
 
   // Tags
   listTags(): Promise<readonly Tag[]>;
+  createTag(draft: TagDraft): Promise<void>;
+  updateTag(draft: TagDraft): Promise<void>;
+  deleteTag(name: string): Promise<void>;
+  renameTag(name: string, newLabel: string): Promise<void>;
+  mergeTags(source: string, target: string): Promise<void>;
 
   // Sections (kanban columns) within a project. Bypasses the library's
   // buggy listColumns() method which wraps responses and doesn't filter
@@ -309,6 +388,12 @@ export class TickTickClientAdapter implements TickTickAdapter {
       tasks = tasks.filter((t) => matchesDueFilter(t, filters.due!));
     }
 
+    if (filters?.pinned !== undefined) {
+      tasks = tasks.filter((t) =>
+        filters.pinned ? t.pinnedAt !== null : t.pinnedAt === null,
+      );
+    }
+
     if (filters?.limit !== undefined && filters.limit >= 0) {
       tasks = tasks.slice(0, filters.limit);
     }
@@ -337,6 +422,7 @@ export class TickTickClientAdapter implements TickTickAdapter {
       ...(draft.isAllDay !== undefined && { isAllDay: draft.isAllDay }),
       ...(draft.tags !== undefined && { tags: draft.tags }),
       ...(draft.repeatFlag !== undefined && { repeatFlag: draft.repeatFlag }),
+      ...(draft.repeatEndDate !== undefined && { repeatEndDate: draft.repeatEndDate }),
       ...(draft.assignee !== undefined && { assignee: draft.assignee }),
       ...(draft.columnId !== undefined && { columnId: draft.columnId }),
     };
@@ -358,6 +444,7 @@ export class TickTickClientAdapter implements TickTickAdapter {
       ...(patch.isAllDay !== undefined && { isAllDay: patch.isAllDay }),
       ...(patch.tags !== undefined && { tags: patch.tags }),
       ...(patch.repeatFlag !== undefined && { repeatFlag: patch.repeatFlag }),
+      ...(patch.repeatEndDate !== undefined && { repeatEndDate: patch.repeatEndDate }),
       ...(patch.assignee !== undefined && { assignee: patch.assignee }),
       ...(patch.columnId !== undefined && { columnId: patch.columnId }),
     };
@@ -382,6 +469,115 @@ export class TickTickClientAdapter implements TickTickAdapter {
     return { task: normalizeTask(result.task), previousId: result.previousId };
   }
 
+  // ── Tasks: pin / unpin / restore ──
+  async pinTask(taskId: string, projectId: string, date?: Date): Promise<void> {
+    // Library signature: pin(taskId, projectId, date?: Date). The third arg
+    // is the pinnedTime. Default is "now" inside the library when omitted.
+    if (date !== undefined) {
+      await this.#client.tasks.pin(taskId, projectId, date);
+    } else {
+      await this.#client.tasks.pin(taskId, projectId);
+    }
+  }
+
+  async unpinTask(taskId: string, projectId: string): Promise<void> {
+    await this.#client.tasks.unpin(taskId, projectId);
+  }
+
+  async restoreTask(taskId: string, projectId: string): Promise<void> {
+    // Note: TickTick's trash listing is broken (status=-1 query is ignored
+    // server-side), so callers must already know the taskId from prior
+    // state. The library docs this on tasks.restore() too.
+    await this.#client.tasks.restore(taskId, projectId);
+  }
+
+  // ── Tasks: bulk operations ──
+  async createTasksBatch(drafts: readonly TaskDraft[]): Promise<void> {
+    if (drafts.length === 0) return;
+    const raw = drafts.map((d) => this.#draftToRaw(d));
+    await this.#client.tasks.createMany(raw as unknown as readonly TickTickTaskDraft[]);
+  }
+
+  async updateTasksBatch(patches: readonly TaskPatch[]): Promise<void> {
+    if (patches.length === 0) return;
+    const raw = patches.map((p) => ({
+      ...this.#draftToRaw(p),
+      id: p.id,
+      projectId: p.projectId,
+    }));
+    await this.#client.tasks.updateMany(raw as unknown as readonly TickTickTaskUpdate[]);
+  }
+
+  async deleteTasksBatch(
+    items: readonly { taskId: string; projectId: string }[],
+  ): Promise<void> {
+    if (items.length === 0) return;
+    await this.#client.tasks.deleteMany(items);
+  }
+
+  async completeTasksBatch(
+    items: readonly { taskId: string; projectId: string }[],
+  ): Promise<void> {
+    if (items.length === 0) return;
+    // Synthesize bulk-complete via updateMany with status=2. The library's
+    // TickTickTaskUpdate type doesn't list `status` (it's a TaskDraft-shape
+    // intersection), but the underlying POST /api/v2/batch/task accepts it.
+    const updates = items.map((i) => ({
+      id: i.taskId,
+      projectId: i.projectId,
+      status: 2,
+    }));
+    await this.#client.tasks.updateMany(updates as unknown as readonly TickTickTaskUpdate[]);
+  }
+
+  // ── Tasks: completed lookup ──
+  async listCompletedTasks(opts: CompletedTaskOptions): Promise<readonly Task[]> {
+    // Two distinct backends:
+    //   • from+to → statistics.listCompleted (closed range, all projects)
+    //   • otherwise → tasks.iterateCompleted (paginated, optional project)
+    if (opts.from !== undefined && opts.to !== undefined) {
+      const limit = opts.limit ?? 100;
+      const raw = await this.#client.statistics.listCompleted(opts.from, opts.to, limit);
+      return raw.map(normalizeTask);
+    }
+
+    const limit = opts.limit ?? 50;
+    const collected: Task[] = [];
+    const iter = this.#client.tasks.iterateCompleted({
+      ...(opts.projectId !== undefined && { projectId: opts.projectId }),
+    });
+    for await (const page of iter) {
+      for (const raw of page) {
+        collected.push(normalizeTask(raw));
+        if (collected.length >= limit) return collected;
+      }
+    }
+    return collected;
+  }
+
+  /**
+   * Convert a normalized {@link TaskDraft} to the raw shape the library
+   * expects. Centralized so create / update / createMany / updateMany all
+   * stay in lock-step on field handling. Returns a plain object — callers
+   * cast to the library type at the call site.
+   */
+  #draftToRaw(draft: TaskDraft): Record<string, unknown> {
+    return {
+      title: draft.title,
+      ...(draft.projectId !== undefined && { projectId: draft.projectId }),
+      ...(draft.content !== undefined && { content: draft.content }),
+      ...(draft.priority !== undefined && { priority: denormalizePriority(draft.priority) }),
+      ...(draft.startDate !== undefined && { startDate: draft.startDate }),
+      ...(draft.dueDate !== undefined && { dueDate: draft.dueDate }),
+      ...(draft.isAllDay !== undefined && { isAllDay: draft.isAllDay }),
+      ...(draft.tags !== undefined && { tags: draft.tags }),
+      ...(draft.repeatFlag !== undefined && { repeatFlag: draft.repeatFlag }),
+      ...(draft.repeatEndDate !== undefined && { repeatEndDate: draft.repeatEndDate }),
+      ...(draft.assignee !== undefined && { assignee: draft.assignee }),
+      ...(draft.columnId !== undefined && { columnId: draft.columnId }),
+    };
+  }
+
   // ── Projects ──
   async listProjects(): Promise<readonly Project[]> {
     const projects = await this.#client.projects.list();
@@ -394,6 +590,19 @@ export class TickTickClientAdapter implements TickTickAdapter {
     if (byId) return byId;
     const lc = idOrName.toLowerCase();
     return projects.find((p) => p.name.toLowerCase() === lc) ?? null;
+  }
+
+  async createProject(draft: ProjectDraft): Promise<Project> {
+    const created = await this.#client.projects.create(draft as TickTickProjectDraft);
+    return normalizeProject(created);
+  }
+
+  async updateProject(patch: ProjectPatch): Promise<void> {
+    await this.#client.projects.update(patch as TickTickProjectDraft & { id: string });
+  }
+
+  async deleteProject(projectId: string): Promise<void> {
+    await this.#client.projects.delete(projectId);
   }
 
   // ── Members (shared projects) ──
@@ -443,6 +652,30 @@ export class TickTickClientAdapter implements TickTickAdapter {
   async listTags(): Promise<readonly Tag[]> {
     const tags = await this.#client.tags.list();
     return tags.map(normalizeTag);
+  }
+
+  async createTag(draft: TagDraft): Promise<void> {
+    await this.#client.tags.create(draft as TickTickTagDraft);
+  }
+
+  async updateTag(draft: TagDraft): Promise<void> {
+    await this.#client.tags.update(draft as TickTickTagDraft);
+  }
+
+  async deleteTag(name: string): Promise<void> {
+    await this.#client.tags.delete(name);
+  }
+
+  async renameTag(name: string, newLabel: string): Promise<void> {
+    // Library's `rename(name, label)` semantics: pass the slug + the new
+    // display label. Despite the name, the underlying endpoint actually
+    // does a slug→slug rename on the server side; the library normalizes
+    // the second arg into both `name` and `label` of the new tag.
+    await this.#client.tags.rename(name, newLabel);
+  }
+
+  async mergeTags(source: string, target: string): Promise<void> {
+    await this.#client.tags.merge(source, target);
   }
 
   // ── Sections (kanban columns) ──
@@ -721,7 +954,9 @@ function denormalizePriority(name: TaskPriorityName): TickTickTaskPriority {
   }
 }
 
-function matchesDueFilter(task: Task, due: 'today' | 'overdue' | 'week'): boolean {
+function matchesDueFilter(task: Task, due: DueFilter): boolean {
+  // `none` is the only branch that includes tasks WITHOUT a dueDate.
+  if (due === 'none') return task.dueDate === null;
   if (!task.dueDate) return false;
   const dueMs = Date.parse(task.dueDate);
   if (Number.isNaN(dueMs)) return false;
@@ -729,6 +964,7 @@ function matchesDueFilter(task: Task, due: 'today' | 'overdue' | 'week'): boolea
   const dayMs = 24 * 60 * 60 * 1000;
 
   if (due === 'overdue') return dueMs < now;
+
   if (due === 'today') {
     const startOfToday = new Date();
     startOfToday.setHours(0, 0, 0, 0);
@@ -736,7 +972,18 @@ function matchesDueFilter(task: Task, due: 'today' | 'overdue' | 'week'): boolea
     endOfToday.setDate(endOfToday.getDate() + 1);
     return dueMs >= startOfToday.getTime() && dueMs < endOfToday.getTime();
   }
-  // week: next 7 days from now
+
+  if (due === 'tomorrow') {
+    const startOfTomorrow = new Date();
+    startOfTomorrow.setHours(0, 0, 0, 0);
+    startOfTomorrow.setDate(startOfTomorrow.getDate() + 1);
+    const endOfTomorrow = new Date(startOfTomorrow);
+    endOfTomorrow.setDate(endOfTomorrow.getDate() + 1);
+    return dueMs >= startOfTomorrow.getTime() && dueMs < endOfTomorrow.getTime();
+  }
+
+  // `week` and `next7days` are synonyms — both mean "due within the next
+  // 7 days from now". Future dates only; doesn't include overdue.
   return dueMs >= now && dueMs <= now + 7 * dayMs;
 }
 
