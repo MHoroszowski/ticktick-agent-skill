@@ -481,7 +481,35 @@ export class TickTickClientAdapter implements TickTickAdapter {
   }
 
   async unpinTask(taskId: string, projectId: string): Promise<void> {
-    await this.#client.tasks.unpin(taskId, projectId);
+    // The library's tasks.unpin() POSTs pinnedTime: null to /api/v2/task/{id},
+    // which TickTick silently no-ops. Reverse-engineered the actual web UI
+    // call via Playwright XHR capture on 2026-04-13: TickTick uses the
+    // sentinel string "-1" (NOT null, NOT 0, NOT omitted) as the unpin marker,
+    // sent via /api/v2/batch/task with the FULL task object in update[].
+    // See: probe-unpin-shapes.ts (since deleted) which confirmed 7 other
+    // shapes silently no-op against this field.
+    const all = await this.#client.tasks.list();
+    const task = all.find((t) => t.id === taskId);
+    if (!task) {
+      throw new AdapterError('NOT_FOUND', `Task ${taskId} not found for unpin`);
+    }
+    const fullTask = task as unknown as Record<string, unknown>;
+    const updateBody = {
+      ...fullTask,
+      pinnedTime: '-1',
+      modifiedTime: new Date().toISOString(),
+    };
+    const client = this.#client as unknown as {
+      request: <T>(method: string, path: string, body?: unknown) => Promise<T>;
+    };
+    await client.request<unknown>('POST', '/api/v2/batch/task', {
+      add: [],
+      update: [updateBody],
+      delete: [],
+      addAttachments: [],
+      updateAttachments: [],
+      deleteAttachments: [],
+    });
   }
 
   async restoreTask(taskId: string, projectId: string): Promise<void> {
