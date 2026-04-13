@@ -15,6 +15,7 @@ import type {
   TaskPriorityName,
   TaskStatus,
   TaskListFilters,
+  DueFilter,
 } from '../adapter.ts';
 
 // ──────────────────────────────────────────────────────────────────
@@ -42,6 +43,7 @@ export async function list(argv: readonly string[], opts: GlobalOpts): Promise<v
     ...(flags.status !== undefined && { status: parseStatusFilter(flags.status) }),
     ...(flags.due !== undefined && { due: parseDueFilter(flags.due) }),
     ...(flags.tag !== undefined && { tag: flags.tag }),
+    ...(flags.pinned === 'true' && { pinned: true }),
     ...(limit !== undefined && { limit }),
   };
 
@@ -107,6 +109,7 @@ export async function create(argv: readonly string[], opts: GlobalOpts): Promise
     ...(flags['all-day'] === 'true' && { isAllDay: true }),
     ...(flags.tags !== undefined && { tags: parseTagList(flags.tags) }),
     ...(flags.repeat !== undefined && { repeatFlag: flags.repeat }),
+    ...(flags['repeat-end'] !== undefined && { repeatEndDate: flags['repeat-end'] }),
     ...(flags.assignee !== undefined && { assignee }),
     ...(columnId !== undefined && { columnId }),
   };
@@ -161,6 +164,7 @@ export async function update(argv: readonly string[], opts: GlobalOpts): Promise
     ...(flags['all-day'] === 'true' && { isAllDay: true }),
     ...(flags.tags !== undefined && { tags: parseTagList(flags.tags) }),
     ...(flags.repeat !== undefined && { repeatFlag: flags.repeat }),
+    ...(flags['repeat-end'] !== undefined && { repeatEndDate: flags['repeat-end'] }),
     ...(flags.assignee !== undefined && { assignee }),
     ...(columnId !== undefined && { columnId }),
   };
@@ -319,10 +323,21 @@ function parseStatusFilter(value: string): TaskStatus | 'all' {
   throw new UsageError(`--status must be one of: open, completed, abandoned, all. Got: ${value}`);
 }
 
-function parseDueFilter(value: string): 'today' | 'overdue' | 'week' {
+function parseDueFilter(value: string): DueFilter {
   const v = value.toLowerCase();
-  if (v === 'today' || v === 'overdue' || v === 'week') return v;
-  throw new UsageError(`--due must be one of: today, overdue, week. Got: ${value}`);
+  if (
+    v === 'today' ||
+    v === 'tomorrow' ||
+    v === 'overdue' ||
+    v === 'week' ||
+    v === 'next7days' ||
+    v === 'none'
+  ) {
+    return v;
+  }
+  throw new UsageError(
+    `--due must be one of: today, tomorrow, overdue, week, next7days, none. Got: ${value}`,
+  );
 }
 
 function parseTagList(value: string): readonly string[] {
@@ -330,5 +345,334 @@ function parseTagList(value: string): readonly string[] {
     .split(',')
     .map((t) => t.trim())
     .filter((t) => t.length > 0);
+}
+
+// ──────────────────────────────────────────────────────────────────
+// pin / unpin
+// ──────────────────────────────────────────────────────────────────
+
+export async function pin(argv: readonly string[], opts: GlobalOpts): Promise<void> {
+  const { flags } = parseCommandArgs(argv);
+  const id = requireFlag(flags, 'id', 'task id');
+  const adapter = createAdapter();
+  const projectId = await resolveTaskProjectId(adapter, id, flags.project);
+
+  await adapter.pinTask(id, projectId);
+
+  if (opts.human) {
+    writeHuman(`Pinned task ${id}`);
+    return;
+  }
+  writeOk({ taskId: id, projectId, pinned: true });
+}
+
+export async function unpin(argv: readonly string[], opts: GlobalOpts): Promise<void> {
+  const { flags } = parseCommandArgs(argv);
+  const id = requireFlag(flags, 'id', 'task id');
+  const adapter = createAdapter();
+  const projectId = await resolveTaskProjectId(adapter, id, flags.project);
+
+  await adapter.unpinTask(id, projectId);
+
+  if (opts.human) {
+    writeHuman(`Unpinned task ${id}`);
+    return;
+  }
+  writeOk({ taskId: id, projectId, pinned: false });
+}
+
+// ──────────────────────────────────────────────────────────────────
+// restore (out of trash — explicit id required)
+// ──────────────────────────────────────────────────────────────────
+
+export async function restore(argv: readonly string[], opts: GlobalOpts): Promise<void> {
+  const { flags } = parseCommandArgs(argv);
+  const id = requireFlag(flags, 'id', 'task id');
+  // No auto-resolve: the task is in trash, getTask() can't find it.
+  const projectIdFlag = requireFlag(
+    flags,
+    'project',
+    'project id — required because trash listing is broken',
+  );
+  const adapter = createAdapter();
+  const projectId = await resolveProjectId(adapter, projectIdFlag);
+  await adapter.restoreTask(id, projectId);
+
+  if (opts.human) {
+    writeHuman(`Restored task ${id} in project ${projectId}`);
+    return;
+  }
+  writeOk({ taskId: id, projectId, restored: true });
+}
+
+// ──────────────────────────────────────────────────────────────────
+// bulk: create-many / update-many / delete-many / complete-many
+// ──────────────────────────────────────────────────────────────────
+
+export async function createMany(argv: readonly string[], opts: GlobalOpts): Promise<void> {
+  const { flags } = parseCommandArgs(argv);
+  const file = requireFlag(flags, 'file', 'path to JSON file containing an array of TaskDraft objects');
+  const drafts = await loadJsonFile<readonly Record<string, unknown>[]>(file);
+  if (!Array.isArray(drafts)) {
+    throw new UsageError(`--file must contain a JSON array of task drafts. Got: ${typeof drafts}`);
+  }
+  if (drafts.length === 0) {
+    throw new UsageError(`--file ${file} is an empty array; nothing to create.`);
+  }
+
+  const adapter = createAdapter();
+  const normalized: TaskDraft[] = [];
+  for (const [i, raw] of drafts.entries()) {
+    if (typeof raw !== 'object' || raw === null) {
+      throw new UsageError(`drafts[${i}] is not an object`);
+    }
+    const r = raw as Record<string, unknown>;
+    if (typeof r.title !== 'string' || r.title.length === 0) {
+      throw new UsageError(`drafts[${i}].title must be a non-empty string`);
+    }
+    // Resolve project name → id (one round-trip per unique name; ok for
+    // small batches). Pre-resolved ids pass through untouched.
+    const projectId =
+      typeof r.projectId === 'string' && r.projectId.length > 0
+        ? await resolveProjectId(adapter, r.projectId)
+        : undefined;
+    const draft: TaskDraft = {
+      title: r.title,
+      ...(projectId !== undefined && { projectId }),
+      ...(typeof r.content === 'string' && { content: r.content }),
+      ...(typeof r.priority === 'string' && { priority: parsePriority(r.priority) }),
+      ...(typeof r.dueDate === 'string' && { dueDate: r.dueDate }),
+      ...(typeof r.startDate === 'string' && { startDate: r.startDate }),
+      ...(typeof r.isAllDay === 'boolean' && { isAllDay: r.isAllDay }),
+      ...(Array.isArray(r.tags) && { tags: r.tags as readonly string[] }),
+      ...(typeof r.repeatFlag === 'string' && { repeatFlag: r.repeatFlag }),
+      ...(typeof r.repeatEndDate === 'string' && { repeatEndDate: r.repeatEndDate }),
+    };
+    normalized.push(draft);
+  }
+
+  await adapter.createTasksBatch(normalized);
+
+  if (opts.human) {
+    writeHuman(`Created ${normalized.length} task${normalized.length === 1 ? '' : 's'} from ${file}`);
+    return;
+  }
+  writeOk({ count: normalized.length, source: file });
+}
+
+export async function updateMany(argv: readonly string[], opts: GlobalOpts): Promise<void> {
+  const { flags } = parseCommandArgs(argv);
+  const file = requireFlag(flags, 'file', 'path to JSON file containing an array of TaskPatch objects');
+  const patches = await loadJsonFile<readonly Record<string, unknown>[]>(file);
+  if (!Array.isArray(patches)) {
+    throw new UsageError(`--file must contain a JSON array of task patches. Got: ${typeof patches}`);
+  }
+  if (patches.length === 0) {
+    throw new UsageError(`--file ${file} is an empty array; nothing to update.`);
+  }
+
+  const adapter = createAdapter();
+  const normalized: TaskPatch[] = [];
+  for (const [i, raw] of patches.entries()) {
+    if (typeof raw !== 'object' || raw === null) {
+      throw new UsageError(`patches[${i}] is not an object`);
+    }
+    const r = raw as Record<string, unknown>;
+    if (typeof r.id !== 'string' || r.id.length === 0) {
+      throw new UsageError(`patches[${i}].id is required`);
+    }
+    if (typeof r.projectId !== 'string' || r.projectId.length === 0) {
+      throw new UsageError(`patches[${i}].projectId is required`);
+    }
+    if (typeof r.title !== 'string' || r.title.length === 0) {
+      throw new UsageError(
+        `patches[${i}].title is required (TickTick rejects updates with no title)`,
+      );
+    }
+    const projectId = await resolveProjectId(adapter, r.projectId);
+    const patch: TaskPatch = {
+      id: r.id,
+      projectId,
+      title: r.title,
+      ...(typeof r.content === 'string' && { content: r.content }),
+      ...(typeof r.priority === 'string' && { priority: parsePriority(r.priority) }),
+      ...(typeof r.dueDate === 'string' && { dueDate: r.dueDate }),
+      ...(typeof r.startDate === 'string' && { startDate: r.startDate }),
+      ...(typeof r.isAllDay === 'boolean' && { isAllDay: r.isAllDay }),
+      ...(Array.isArray(r.tags) && { tags: r.tags as readonly string[] }),
+      ...(typeof r.repeatFlag === 'string' && { repeatFlag: r.repeatFlag }),
+      ...(typeof r.repeatEndDate === 'string' && { repeatEndDate: r.repeatEndDate }),
+    };
+    normalized.push(patch);
+  }
+
+  await adapter.updateTasksBatch(normalized);
+
+  if (opts.human) {
+    writeHuman(`Updated ${normalized.length} task${normalized.length === 1 ? '' : 's'} from ${file}`);
+    return;
+  }
+  writeOk({ count: normalized.length, source: file });
+}
+
+export async function deleteMany(argv: readonly string[], opts: GlobalOpts): Promise<void> {
+  const { flags } = parseCommandArgs(argv);
+  const idsRaw = requireFlag(flags, 'ids', 'comma-separated task ids');
+  const ids = parseIdList(idsRaw);
+  if (ids.length === 0) {
+    throw new UsageError('--ids must contain at least one task id');
+  }
+
+  const adapter = createAdapter();
+  // If --project is provided, every id is assumed to live there (no
+  // round-trip resolution). Useful for bulk-deleting completed tasks,
+  // which getTask() can't see because it reads the open-tasks index.
+  const explicitProjectId =
+    flags.project !== undefined ? await resolveProjectId(adapter, flags.project) : undefined;
+  const items =
+    explicitProjectId !== undefined
+      ? ids.map((taskId) => ({ taskId, projectId: explicitProjectId }))
+      : await resolveBatchItems(adapter, ids);
+
+  await adapter.deleteTasksBatch(items);
+
+  if (opts.human) {
+    writeHuman(`Deleted ${items.length} task${items.length === 1 ? '' : 's'}`);
+    return;
+  }
+  writeOk({ count: items.length, items });
+}
+
+export async function completeMany(argv: readonly string[], opts: GlobalOpts): Promise<void> {
+  const { flags } = parseCommandArgs(argv);
+  const idsRaw = requireFlag(flags, 'ids', 'comma-separated task ids');
+  const ids = parseIdList(idsRaw);
+  if (ids.length === 0) {
+    throw new UsageError('--ids must contain at least one task id');
+  }
+
+  const adapter = createAdapter();
+  // Same --project shortcut as deleteMany — see comment there.
+  const explicitProjectId =
+    flags.project !== undefined ? await resolveProjectId(adapter, flags.project) : undefined;
+  const items =
+    explicitProjectId !== undefined
+      ? ids.map((taskId) => ({ taskId, projectId: explicitProjectId }))
+      : await resolveBatchItems(adapter, ids);
+
+  await adapter.completeTasksBatch(items);
+
+  if (opts.human) {
+    writeHuman(`Completed ${items.length} task${items.length === 1 ? '' : 's'}`);
+    return;
+  }
+  writeOk({ count: items.length, items });
+}
+
+// ──────────────────────────────────────────────────────────────────
+// completed — paginated iterator OR statistics range
+// ──────────────────────────────────────────────────────────────────
+
+export async function completed(argv: readonly string[], opts: GlobalOpts): Promise<void> {
+  const { flags } = parseCommandArgs(argv);
+
+  const hasFrom = flags.from !== undefined;
+  const hasTo = flags.to !== undefined;
+  const hasProject = flags.project !== undefined;
+
+  if (hasFrom !== hasTo) {
+    throw new UsageError('--from and --to must be passed together (closed range).');
+  }
+  if (hasFrom && hasProject) {
+    throw new UsageError(
+      '--from/--to (statistics range) and --project (paginated iterator) are mutually exclusive. Pick one mode.',
+    );
+  }
+
+  let limit: number | undefined;
+  if (flags.limit !== undefined) {
+    const n = Number.parseInt(flags.limit, 10);
+    if (!Number.isFinite(n) || n < 0) {
+      throw new UsageError(`--limit must be a non-negative integer, got: ${flags.limit}`);
+    }
+    limit = n;
+  }
+
+  const adapter = createAdapter();
+
+  let result;
+  let mode: 'iterator' | 'statistics';
+  if (hasFrom && hasTo) {
+    mode = 'statistics';
+    result = await adapter.listCompletedTasks({
+      from: flags.from!,
+      to: flags.to!,
+      ...(limit !== undefined && { limit }),
+    });
+  } else {
+    mode = 'iterator';
+    const projectId = hasProject ? await resolveProjectId(adapter, flags.project!) : undefined;
+    result = await adapter.listCompletedTasks({
+      ...(projectId !== undefined && { projectId }),
+      ...(limit !== undefined && { limit }),
+    });
+  }
+
+  if (opts.human) {
+    writeHuman(formatTasksTable(result));
+    return;
+  }
+  writeOk({ mode, count: result.length, tasks: result });
+}
+
+// ──────────────────────────────────────────────────────────────────
+// shared helpers (only used by the new bulk handlers above)
+// ──────────────────────────────────────────────────────────────────
+
+function parseIdList(value: string): readonly string[] {
+  return value
+    .split(',')
+    .map((t) => t.trim())
+    .filter((t) => t.length > 0);
+}
+
+async function loadJsonFile<T>(path: string): Promise<T> {
+  let text: string;
+  try {
+    const file = Bun.file(path);
+    text = await file.text();
+  } catch (err) {
+    throw new UsageError(
+      `--file ${path} could not be read: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+  try {
+    return JSON.parse(text) as T;
+  } catch (err) {
+    throw new UsageError(
+      `--file ${path} contains invalid JSON: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+}
+
+/**
+ * Resolve a list of task ids into {taskId, projectId} pairs by fetching
+ * each task. One round-trip per id — fine for the v1.3 batch sizes the
+ * plan envisions; the FOLLOWUPS file should track caching this if batches
+ * grow large. Throws NOT_FOUND on the first id that can't be resolved.
+ */
+async function resolveBatchItems(
+  adapter: TickTickAdapter,
+  ids: readonly string[],
+): Promise<readonly { taskId: string; projectId: string }[]> {
+  const items: { taskId: string; projectId: string }[] = [];
+  for (const taskId of ids) {
+    const task = await adapter.getTask(taskId);
+    if (task === null) {
+      throw new AdapterError('NOT_FOUND', `Task ${taskId} not found (cannot resolve project)`);
+    }
+    items.push({ taskId, projectId: task.projectId });
+  }
+  return items;
 }
 

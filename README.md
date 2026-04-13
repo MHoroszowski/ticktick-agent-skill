@@ -10,9 +10,18 @@ Uses the **unofficial v2 TickTick API** (the same one the ticktick.com web app u
 |---|---|
 | Tasks — list / get / create / update / complete / delete | ✅ |
 | Tasks — move between lists | ✅ *(with caveat: returns new id; see below)* |
+| Tasks — pin / unpin / restore | ✅ *(restore requires explicit id — trash listing is broken upstream)* |
+| Tasks — bulk create / update / delete / complete | ✅ |
+| Tasks — recurring end date (`--repeat-end <ISO>`) | ✅ |
+| Tasks — completed-task listing (paginated iterator OR statistics range) | ✅ |
 | Tasks — filter by project, status, due window, tag, limit | ✅ |
-| Projects (lists) — list / get | ✅ |
-| Tags — list | ✅ |
+| Tasks — smart-list filters (`today` / `tomorrow` / `overdue` / `week` / `next7days` / `none` / `--pinned`) | ✅ |
+| Tasks — `--section` (kanban column) on create and update | ✅ |
+| Tasks — `--assignee` (shared-list assignment) on create and update | ✅ |
+| Projects (lists) — list / get / create / update / delete | ✅ *(delete requires `--confirm`)* |
+| Tags — list / create / update / delete / rename / merge | ✅ |
+| Sections (kanban columns) — list (read-only) | ✅ |
+| Shared-list members — list / remove | ✅ *(remove is dry-run by default; `--force` to commit)* |
 | Checklist items inside a task — list / add / complete / delete | ✅ |
 | Automatic session refresh on 401/auth-expired | ✅ |
 | JSON output (default) and `--human` table output | ✅ |
@@ -23,14 +32,17 @@ Uses the **unofficial v2 TickTick API** (the same one the ticktick.com web app u
 1. **Checklist items** inside a task — lightweight, stored in `task.items[]`. ✅ Supported here.
 2. **True nested subtasks** — indented child tasks with their own due dates, priorities, and tags, linked via `parentId`. ❌ NOT supported — the underlying `ticktick-client` library doesn't expose `parentId`-based nesting.
 
-This is the largest intentional gap in v1. It's tracked as a follow-up — see `FOLLOWUPS.md` in this directory. The work required is reverse-engineering TickTick's v2 subtask endpoints via browser DevTools / Playwright traffic capture (the same technique `jaeyeonling` used for the rest of the library) and either patching upstream or forking.
+This is the largest intentional gap remaining. It's tracked as a follow-up — see `FOLLOWUPS.md` in this directory. The work required is reverse-engineering TickTick's v2 subtask endpoints via browser DevTools / Playwright traffic capture (the same technique `jaeyeonling` used for the rest of the library) and either patching upstream or forking.
 
-**Other intentional gaps in v1:**
+**Other intentional gaps in v1.3:**
 
+- ❌ **Sections create / rename / delete / reorder** — `sections list` is supported (read-only) but CRUD is deferred to v1.4. Requires XHR capture because the `jaeyeonling/ticktick-client` library doesn't expose the column-mutation endpoints.
+- ❌ **Reminders (time-based or location)** — deferred to v1.4. The field exists in the raw API but the library strips it on read and ignores it on write.
 - ❌ **2FA / MFA accounts** — the library does not implement the 2FA login flow. Accounts with 2FA enabled will fail at login.
-- ❌ **Focus sessions, habits, calendar events, countdowns, recurring-rule editing** — not exposed in v1.
-- ❌ **Trash listing / reliable task restoration** — TickTick's v2 API has a known bug where the `status=-1` (trash) filter is ignored. The library documents this. Deleted tasks cannot be reliably listed or restored through the skill; use the TickTick web UI directly.
+- ❌ **Focus sessions, habits, calendar events, countdowns** — not exposed in this skill.
+- ⚠️ **Trash listing** — TickTick's v2 API has a known bug where the `status=-1` (trash) filter is ignored. Deleted tasks cannot be listed through the skill; use the TickTick web UI to find the id, then `tasks restore --id <id> --project <pid>` works.
 - ⚠️ **Task moves change the task id.** TickTick's REST API doesn't support in-place project moves, so `tasks move` is implemented as copy-to-destination + delete-from-source. The response includes both the new task and `previousId` so the agent can update any references.
+- ⚠️ **`projects delete` requires `--confirm`.** Without it, the CLI prints a warning showing the affected task count and exits with validation error code 6. This is a deliberate safety gate because deleting a project also deletes every task inside it.
 
 ## Setup
 
@@ -84,8 +96,12 @@ Run `./bin/ticktick help` for the full command reference.
 
 You don't invoke the CLI directly. Just ask naturally — "add 'X' to my inbox," "what's in my TickTick," "mark X done." The PAI skill router picks up `TickTick` and routes to the right workflow file, which invokes the CLI.
 
-The skill's workflows are in `Workflows/`:
-- `ListTasks.md`, `CreateTask.md`, `CompleteTask.md`, `DeleteTask.md`, `MoveTask.md`, `ListProjects.md`, `Auth.md`
+The skill's workflows are in `Workflows/` (v1.3):
+- Task verbs: `ListTasks.md`, `CreateTask.md`, `CompleteTask.md`, `DeleteTask.md`, `MoveTask.md`, `PinTask.md`, `UnpinTask.md`
+- Bulk verbs: `BulkComplete.md`, `BulkDelete.md`, `ListCompletedTasks.md`
+- Project verbs: `ListProjects.md`, `CreateProject.md`, `UpdateProject.md`, `DeleteProject.md`
+- Tag verbs: `CreateTag.md`, `DeleteTag.md`, `RenameTag.md`, `MergeTags.md`
+- Meta: `Auth.md`
 
 ## Credential rotation
 
@@ -161,17 +177,19 @@ TickTick/
 │   ├── output.ts            # JSON + --human formatters
 │   └── commands/
 │       ├── auth.ts          # login, logout, whoami
-│       ├── tasks.ts         # list, get, create, update, complete, delete, move
-│       ├── projects.ts      # list, get
-│       ├── tags.ts          # list
+│       ├── tasks.ts         # list, get, create, update, complete, delete, move,
+│       │                    # pin, unpin, restore, create-many, update-many,
+│       │                    # delete-many, complete-many, completed
+│       ├── projects.ts      # list, get, create, update, delete
+│       ├── tags.ts          # list, create, update, delete, rename, merge
+│       ├── sections.ts      # list (read-only)
+│       ├── members.ts       # list, remove
 │       └── checklist.ts     # list, add, complete, delete
-├── Workflows/
-│   ├── ListTasks.md
-│   ├── CreateTask.md
-│   ├── CompleteTask.md
-│   ├── DeleteTask.md
-│   ├── MoveTask.md
-│   ├── ListProjects.md
+├── Workflows/                # 19 workflow files (v1.3)
+│   ├── ListTasks.md  CreateTask.md  CompleteTask.md  DeleteTask.md  MoveTask.md
+│   ├── PinTask.md  UnpinTask.md  BulkComplete.md  BulkDelete.md  ListCompletedTasks.md
+│   ├── ListProjects.md  CreateProject.md  UpdateProject.md  DeleteProject.md
+│   ├── CreateTag.md  DeleteTag.md  RenameTag.md  MergeTags.md
 │   └── Auth.md
 ├── tests/
 │   └── smoke.sh             # live-API end-to-end acceptance
