@@ -1,6 +1,6 @@
 ---
 name: TickTick
-description: TickTick task and list management — create, list, update, complete, delete, move, pin, and bulk-edit tasks; nested subtasks via parentId (create child, indent, promote, tree view); recurring end dates, smart-list filters, and time-based reminders; manage checklist items; create, update, rename, merge, delete tags; create, update, delete projects (lists); shared-list members and sections. USE WHEN ticktick, add task, create task, new task, my tasks, todos, to-do, inbox, mark done, complete task, finished task, delete task, move task, pin task, unpin, bulk complete, bulk delete, what did I finish, completed tasks, create tag, delete tag, rename tag, merge tags, create list, new project, delete list, rename list, my lists, my projects, what's due, checklist, subtask, parent task, child task, subtask hierarchy, indent task, promote task, nested subtask, reminder, remind me, alarm, alert before, ping me before, login to ticktick, ticktick session.
+description: TickTick task and list management — create, list, update, complete, delete, move, pin, and bulk-edit tasks; nested subtasks via parentId (create child, indent, promote, tree view); recurring end dates, smart-list filters, time-based reminders, and location-based geofence reminders; manage checklist items; create, update, rename, merge, delete tags; create, update, delete projects (lists); shared-list members and sections. USE WHEN ticktick, add task, create task, new task, my tasks, todos, to-do, inbox, mark done, complete task, finished task, delete task, move task, pin task, unpin, bulk complete, bulk delete, what did I finish, completed tasks, create tag, delete tag, rename tag, merge tags, create list, new project, delete list, rename list, my lists, my projects, what's due, checklist, subtask, parent task, child task, subtask hierarchy, indent task, promote task, nested subtask, reminder, remind me, alarm, alert before, ping me before, location reminder, geofence, remind me at, remind me when I arrive, ping me when I leave, at-location reminder, login to ticktick, ticktick session.
 ---
 
 ## ⚠️ MANDATORY TRIGGER
@@ -34,6 +34,7 @@ description: TickTick task and list management — create, list, update, complet
 | "remind me 15 minutes before X / add a 1-hour reminder to X / ping me a day before Y" | → `Workflows/AddReminder.md` |
 | "remove the 15-minute reminder from X / drop the 1-hour reminder on Y" | → `Workflows/RemoveReminder.md` |
 | "clear all reminders on X / stop reminding me about Y" | → `Workflows/ClearReminders.md` |
+| "remind me when I arrive at X / ping me when I leave Y / set a location reminder for X / geofence on X" | → `Workflows/SetLocationReminder.md` |
 | "login to ticktick / am I logged in / logout" | → `Workflows/Auth.md` |
 | "create a section / add a kanban column to X" | → `Workflows/CreateSection.md` |
 | "rename the X section / rename column X to Y" | → `Workflows/RenameSection.md` |
@@ -78,6 +79,7 @@ If a `PREFERENCES.md` file exists there, load and apply it. Typical overrides: d
 - ✅ Tasks: completed-task listing — paginated iterator mode OR closed date-range mode
 - ✅ Tasks: `--section` / `--assignee` on create and update (shared lists)
 - ✅ **Time-based reminders** on tasks: set on create/update, append, remove, clear. Accepts human-friendly offsets (`15m`, `1h`, `1d`, `1d9h`, `at-start`) or raw TRIGGER strings. Multiple reminders per task supported. REPLACE semantics on `tasks update --remind`; APPEND on `tasks remind add`.
+- ✅ **Location-based reminders** (geofences) on tasks: single geofence per task, arrive/leave trigger, configurable radius. Set/replace on create/update via `--location-lat/--lng/--radius/--trigger/--alias/--address`. Clear via `tasks location clear` (the patch endpoint silently no-ops every "clear" shape, so the adapter routes through a batch-endpoint escape hatch with `removed: true`). iPhone push delivery for API-set geofences verified end-to-end.
 - ✅ Projects (lists): list, get, create, update, delete (delete requires `--confirm`)
 - ✅ Tags: list, create, update, delete, rename, merge *(see Known quirks — only list + create actually persist)*
 - ✅ Sections (kanban columns): list, create, rename, delete (with optional `--reassign` to move tasks first), reorder
@@ -88,7 +90,6 @@ If a `PREFERENCES.md` file exists there, load and apply it. Typical overrides: d
 
 **Known limitations — NOT in v1.3:**
 - ⚠️ **Parent delete orphans children.** TickTick does not cascade-delete nested subtasks. Deleting a parent leaves its children in place with their parentId still pointing at the deleted parent. The CLI surfaces this in the delete response so the agent can decide whether to follow up.
-- ⏳ **Location-based reminders** — CLI surface not yet exposed in v1.3, but the underlying API fully supports them (verified 2026-04-13 via round-trip probe and iPhone geofence QA). A future PLAN_06 (~2h) would add `--location-lat/--lng/--radius/--trigger` flags. If the user asks for location reminders today, tell them the API supports it and a short implementation plan would ship the CLI; don't claim it's impossible.
 - ❌ Focus sessions, habits, calendar, countdowns
 - ❌ 2FA / MFA accounts (library does not support the 2FA login flow)
 - ❌ Listing trash (TickTick's v2 API has a known bug here — the library documents it). Restore works if you already know the task id from prior state.
