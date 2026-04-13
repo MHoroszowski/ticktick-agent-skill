@@ -92,6 +92,20 @@ export type Task = {
    * a raw cast. Null when the task is unsectioned.
    */
   readonly columnId: string | null;
+  /**
+   * Time-based reminders, as RFC-5545-style TRIGGER duration strings. The
+   * underlying TickTick wire shape is an array of `{trigger}` objects (and
+   * the library type strips the field entirely); we recover and flatten
+   * via a raw cast. Sign convention: TickTick uses UNSIGNED durations to
+   * mean "before the task's scheduled time", so `TRIGGER:PT15M` is "15
+   * minutes before due". Verified empirically against the live API on
+   * 2026-04-12 — see scripts/probe-reminders.ts.
+   *
+   * Empty array when the task has no reminders. Reminders only fire on
+   * tasks that have a due date; setting reminders on a task without a due
+   * date is allowed by the API but won't trigger anything.
+   */
+  readonly reminders: readonly string[];
 };
 
 export type Project = {
@@ -161,6 +175,14 @@ export type TaskDraft = {
   readonly assignee?: number | null;
   /** Section / kanban column id within the parent project. */
   readonly columnId?: string | null;
+  /**
+   * Time-based reminders as TRIGGER duration strings (e.g. `TRIGGER:PT15M`,
+   * `TRIGGER:P1D`). Pass `[]` to explicitly clear all reminders on update.
+   * Omit to leave untouched. The adapter wraps each string in the
+   * `{trigger}` object shape TickTick expects on the wire. Reminders only
+   * fire on tasks with a due date — caller is responsible for that gate.
+   */
+  readonly reminders?: readonly string[];
 };
 
 export type TaskPatch = TaskDraft & {
@@ -355,6 +377,23 @@ export interface TickTickAdapter {
    */
   reorderSection(projectId: string, sectionId: string, sortOrder: number): Promise<Section>;
 
+  // Reminders. Time-based reminders are stored as a `reminders[]` array of
+  // `{trigger}` objects on the raw task; we surface them as a flat string
+  // array on the normalized Task. The library doesn't model the field at
+  // all, so the cast-through-adapter pattern (same as assignee/columnId)
+  // is the swap point.
+  //
+  // `setReminders` is the low-level primitive: caller supplies the already-
+  // fetched current task plus the exact new reminder set, and we PUT the
+  // hydrated full-task body. `addReminder`/`removeReminder`/`clearReminders`
+  // are single-roundtrip convenience wrappers that fetch the current task
+  // internally. Callers who already have the current task in hand should
+  // prefer `setReminders` to avoid a redundant GET.
+  setReminders(current: Task, projectId: string, reminders: readonly string[]): Promise<Task>;
+  addReminder(taskId: string, projectId: string, trigger: string): Promise<Task>;
+  removeReminder(taskId: string, projectId: string, trigger: string): Promise<Task>;
+  clearReminders(taskId: string, projectId: string): Promise<Task>;
+
   // Checklist items (v1: what jaeyeonling/ticktick-client supports).
   // NOTE: Nested subtasks (parentId-based child tasks) are NOT yet supported.
   // Tracked as follow-up — see README.
@@ -480,9 +519,12 @@ export class TickTickClientAdapter implements TickTickAdapter {
       ...(draft.repeatEndDate !== undefined && { repeatEndDate: draft.repeatEndDate }),
       ...(draft.assignee !== undefined && { assignee: draft.assignee }),
       ...(draft.columnId !== undefined && { columnId: draft.columnId }),
+      ...(draft.reminders !== undefined && { reminders: draft.reminders.map(wrapReminder) }),
     };
     // Cast through unknown because the library's TickTickTaskDraft type
-    // doesn't include assignee/columnId — we're intentionally bypassing.
+    // doesn't include assignee/columnId/reminders — we're intentionally
+    // bypassing. The library's request layer passes the body through
+    // verbatim, so TickTick receives the extra fields.
     const created = await this.#client.tasks.create(rawDraft as unknown as TickTickTaskDraft);
     return normalizeTask(created);
   }
@@ -502,6 +544,7 @@ export class TickTickClientAdapter implements TickTickAdapter {
       ...(patch.repeatEndDate !== undefined && { repeatEndDate: patch.repeatEndDate }),
       ...(patch.assignee !== undefined && { assignee: patch.assignee }),
       ...(patch.columnId !== undefined && { columnId: patch.columnId }),
+      ...(patch.reminders !== undefined && { reminders: patch.reminders.map(wrapReminder) }),
     };
     const updated = await this.#client.tasks.update(rawPatch as unknown as TickTickTaskUpdate);
     return normalizeTask(updated);
@@ -677,7 +720,54 @@ export class TickTickClientAdapter implements TickTickAdapter {
       ...(draft.repeatEndDate !== undefined && { repeatEndDate: draft.repeatEndDate }),
       ...(draft.assignee !== undefined && { assignee: draft.assignee }),
       ...(draft.columnId !== undefined && { columnId: draft.columnId }),
+      ...(draft.reminders !== undefined && { reminders: draft.reminders.map(wrapReminder) }),
     };
+  }
+
+  // ── Reminders ──
+  //
+  // CRITICAL: TickTick's PUT /api/v2/task endpoint does NOT behave like a
+  // partial PATCH. Sending a sparse body of `{id, projectId, title,
+  // reminders}` causes the server to wipe other fields — verified
+  // empirically via tests/smoke.sh step 18 on 2026-04-13: `dueDate` came
+  // back null and reminders came back empty in the echo despite the
+  // reminder array being non-empty in the request. The fix is to re-send
+  // every field that was on the task before, overlaying only the
+  // reminders delta. This mirrors what the TickTick web UI itself does
+  // on every edit — it always POSTs the full task body. See
+  // `hydratePatch` below.
+  //
+  // `setReminders` is the primitive: caller owns the current task fetch
+  // and the diff. The three wrapper methods fetch internally for callers
+  // that don't already have the task in hand.
+  async setReminders(
+    current: Task,
+    projectId: string,
+    reminders: readonly string[],
+  ): Promise<Task> {
+    return this.updateTask(hydratePatch(current, projectId, reminders));
+  }
+
+  async addReminder(taskId: string, projectId: string, trigger: string): Promise<Task> {
+    const current = await this.getTask(taskId);
+    if (current === null) throw new AdapterError('NOT_FOUND', `Task ${taskId} not found`);
+    const next = current.reminders.includes(trigger)
+      ? current.reminders
+      : [...current.reminders, trigger];
+    return this.setReminders(current, projectId, next);
+  }
+
+  async removeReminder(taskId: string, projectId: string, trigger: string): Promise<Task> {
+    const current = await this.getTask(taskId);
+    if (current === null) throw new AdapterError('NOT_FOUND', `Task ${taskId} not found`);
+    const next = current.reminders.filter((t) => t !== trigger);
+    return this.setReminders(current, projectId, next);
+  }
+
+  async clearReminders(taskId: string, projectId: string): Promise<Task> {
+    const current = await this.getTask(taskId);
+    if (current === null) throw new AdapterError('NOT_FOUND', `Task ${taskId} not found`);
+    return this.setReminders(current, projectId, []);
   }
 
   // ── Projects ──
@@ -1076,6 +1166,83 @@ export class TickTickClientAdapter implements TickTickAdapter {
 // Normalizers
 // ──────────────────────────────────────────────────────────────────
 
+/**
+ * Wrap a TRIGGER string in the `{trigger}` object shape TickTick expects
+ * on the wire. Verified against the live API: bare strings produce HTTP
+ * 500 unknown_exception; objects round-trip cleanly.
+ */
+function wrapReminder(trigger: string): { trigger: string } {
+  return { trigger };
+}
+
+/**
+ * Build a full TaskPatch by copying every meaningful field off an
+ * existing normalized Task. Used everywhere a caller needs to do a
+ * full-body PUT instead of a partial PATCH — TickTick's /api/v2/task
+ * endpoint wipes any field not re-sent, so the safe play is always to
+ * start from the current task and overlay changes.
+ *
+ * Null-valued source fields are explicitly omitted so the call remains
+ * a no-op for them (sending `null` for `dueDate` would clear the due
+ * date — exactly what we're trying to avoid).
+ *
+ * The `reminders` parameter is required because every current caller
+ * of this helper is modifying reminders. Callers that want to preserve
+ * the existing reminder set pass `current.reminders` explicitly. The
+ * optional `overlay` argument merges user-supplied field overrides on
+ * top of the hydrated base — used by the commands layer when the user
+ * passes other flags alongside `--remind` on update.
+ */
+export function hydratePatch(
+  current: Task,
+  projectId: string,
+  reminders: readonly string[],
+  overlay: Partial<TaskPatch> = {},
+): TaskPatch {
+  return {
+    id: current.id,
+    projectId,
+    title: current.title,
+    ...(current.content !== null && { content: current.content }),
+    priority: current.priority,
+    ...(current.startDate !== null && { startDate: current.startDate }),
+    ...(current.dueDate !== null && { dueDate: current.dueDate }),
+    ...(current.isAllDay !== null && { isAllDay: current.isAllDay }),
+    tags: current.tags,
+    ...(current.repeatFlag !== null && { repeatFlag: current.repeatFlag }),
+    ...(current.assignee !== null && { assignee: current.assignee }),
+    ...(current.columnId !== null && { columnId: current.columnId }),
+    ...overlay,
+    reminders,
+  };
+}
+
+/**
+ * Pull the flat string array out of the raw `reminders` field on a task.
+ * The wire shape is an array of `{trigger, id?}` objects. We surface only
+ * the trigger strings to the public Task type because the optional `id`
+ * field is server-side-irrelevant — TickTick doesn't require it on writes
+ * and doesn't auto-assign one. Defensive: returns [] if the field is
+ * missing, null, malformed, or contains entries without a string trigger.
+ */
+function normalizeReminders(raw: unknown): readonly string[] {
+  if (!Array.isArray(raw)) return [];
+  const out: string[] = [];
+  for (const entry of raw) {
+    if (typeof entry === 'string') {
+      // Defensive — older API responses or third-party tooling might emit
+      // bare strings even though the canonical shape is objects.
+      out.push(entry);
+      continue;
+    }
+    if (entry && typeof entry === 'object' && 'trigger' in entry) {
+      const t = (entry as { trigger: unknown }).trigger;
+      if (typeof t === 'string') out.push(t);
+    }
+  }
+  return out;
+}
+
 function normalizeTask(raw: TickTickTask): Task {
   // The library's typed TickTickTask strips several fields that exist in
   // the raw API response. Cast to any to recover them.
@@ -1083,6 +1250,7 @@ function normalizeTask(raw: TickTickTask): Task {
     assignee?: number | null;
     creator?: number | null;
     columnId?: string | null;
+    reminders?: unknown;
   };
   return {
     id: r.id,
@@ -1102,6 +1270,7 @@ function normalizeTask(raw: TickTickTask): Task {
     assignee: typeof r.assignee === 'number' ? r.assignee : null,
     creator: typeof r.creator === 'number' ? r.creator : null,
     columnId: r.columnId ?? null,
+    reminders: normalizeReminders(r.reminders),
   };
 }
 

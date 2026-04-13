@@ -18,6 +18,7 @@ Uses the **unofficial v2 TickTick API** (the same one the ticktick.com web app u
 | Tasks — smart-list filters (`today` / `tomorrow` / `overdue` / `week` / `next7days` / `none` / `--pinned`) | ✅ |
 | Tasks — `--section` (kanban column) on create and update | ✅ |
 | Tasks — `--assignee` (shared-list assignment) on create and update | ✅ |
+| Tasks — time-based reminders (multi, RFC-5545 TRIGGER) | ✅ *(REPLACE on `tasks update --remind`, APPEND via `tasks remind add`)* |
 | Projects (lists) — list / get / create / update / delete | ✅ *(delete requires `--confirm`)* |
 | Tags — list / create | ✅ |
 | Tags — update / rename / merge / delete | ⚠️ *(CLI returns ok but tags write-module is broken upstream — see Known quirks)* |
@@ -37,7 +38,7 @@ This is the largest intentional gap remaining. It's tracked as a follow-up — s
 
 **Other intentional gaps in v1.3:**
 
-- ❌ **Reminders (time-based or location)** — deferred to v1.4. The field exists in the raw API but the library strips it on read and ignores it on write.
+- ❌ **Location-based reminders** — not supported. Time-based reminders ARE supported (see table above); the library strips the `reminders[]` field on read and ignores it on write, so the adapter recovers it via raw cast and hydrates a full-task PUT on every reminder edit.
 - ❌ **2FA / MFA accounts** — the library does not implement the 2FA login flow. Accounts with 2FA enabled will fail at login.
 - ❌ **Focus sessions, habits, calendar events, countdowns** — not exposed in this skill.
 - ⚠️ **Trash listing** — TickTick's v2 API has a known bug where the `status=-1` (trash) filter is ignored. Deleted tasks cannot be listed through the skill; use the TickTick web UI to find the id, then `tasks restore --id <id> --project <pid>` works.

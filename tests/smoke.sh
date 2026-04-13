@@ -596,4 +596,77 @@ ok "delete-without-confirm safety gate intact (project still exists)"
   || fail "projects delete --confirm failed"
 ok "deleted project $SMOKE_PROJ_ID (with --confirm)"
 
+# ─────────────────────────────────────────────────────────────────
+# v1.4 — PLAN_03 reminders subsystem
+# ─────────────────────────────────────────────────────────────────
+
+# ─── 30. reminders lifecycle (create/get/add/remove/clear/replace) ───
+# Uses a far-future due date so nothing actually fires on the user's
+# devices during the smoke run. Covers ISC-3.2, 3.3, 3.5, 3.6, 3.7, 3.8.
+log "Step 30: reminders lifecycle"
+REMIND_CREATE_JSON="$("$TICKTICK" tasks create \
+  --title "PAI smoke reminders" \
+  --project "$TEST_PROJECT" \
+  --due "2099-12-31T09:00:00.000+0000" \
+  --remind 15m \
+  --remind 1d)"
+echo "$REMIND_CREATE_JSON" | jq -e '.ok == true and (.task.reminders | length) == 2' >/dev/null \
+  || fail "create with 2 reminders failed: $REMIND_CREATE_JSON"
+REMIND_TASK_ID="$(echo "$REMIND_CREATE_JSON" | jq -r '.task.id')"
+ok "created task $REMIND_TASK_ID with 2 reminders (15m, 1d)"
+
+REMIND_GET_JSON="$("$TICKTICK" tasks get --id "$REMIND_TASK_ID")"
+echo "$REMIND_GET_JSON" | jq -e '.ok == true and (.task.reminders | length) == 2' >/dev/null \
+  || fail "get did not round-trip reminders: $REMIND_GET_JSON"
+# Exact value verification — make sure the wire format is what we expect.
+echo "$REMIND_GET_JSON" | jq -e '.task.reminders | index("TRIGGER:PT15M") != null and index("TRIGGER:P1D") != null' >/dev/null \
+  || fail "reminder values unexpected: $REMIND_GET_JSON"
+ok "reminders round-trip through get with exact TRIGGER values"
+
+"$TICKTICK" tasks remind add --id "$REMIND_TASK_ID" --offset 1h >/dev/null \
+  || fail "remind add 1h failed"
+REMIND_AFTER_ADD_JSON="$("$TICKTICK" tasks get --id "$REMIND_TASK_ID")"
+echo "$REMIND_AFTER_ADD_JSON" | jq -e '.task.reminders | length == 3' >/dev/null \
+  || fail "after add, expected 3 reminders: $REMIND_AFTER_ADD_JSON"
+ok "appended 1h reminder (now 3 total)"
+
+"$TICKTICK" tasks remind remove --id "$REMIND_TASK_ID" --offset 15m >/dev/null \
+  || fail "remind remove 15m failed"
+REMIND_AFTER_REM_JSON="$("$TICKTICK" tasks get --id "$REMIND_TASK_ID")"
+echo "$REMIND_AFTER_REM_JSON" | jq -e '.task.reminders | (length == 2) and (index("TRIGGER:PT15M") == null)' >/dev/null \
+  || fail "after remove 15m, expected 2 reminders without 15m: $REMIND_AFTER_REM_JSON"
+ok "removed 15m reminder (now 2 total)"
+
+# Test REPLACE semantics of tasks update --remind.
+REMIND_REPLACE_JSON="$("$TICKTICK" tasks update \
+  --id "$REMIND_TASK_ID" \
+  --project "$PROJECT_ID" \
+  --title "PAI smoke reminders" \
+  --remind 30m)"
+echo "$REMIND_REPLACE_JSON" | jq -e '.ok == true and (.task.reminders | length == 1) and (.task.reminders[0] == "TRIGGER:PT30M") and (.previousReminders | length == 2)' >/dev/null \
+  || fail "update --remind did not REPLACE correctly: $REMIND_REPLACE_JSON"
+ok "update --remind replaces existing reminders (2 → 1)"
+
+"$TICKTICK" tasks remind clear --id "$REMIND_TASK_ID" >/dev/null \
+  || fail "remind clear failed"
+REMIND_AFTER_CLEAR_JSON="$("$TICKTICK" tasks get --id "$REMIND_TASK_ID")"
+echo "$REMIND_AFTER_CLEAR_JSON" | jq -e '.task.reminders | length == 0' >/dev/null \
+  || fail "after clear, expected 0 reminders: $REMIND_AFTER_CLEAR_JSON"
+ok "cleared all reminders"
+
+# Test --remind without --due is rejected on create.
+set +e
+REMIND_NODUE_OUTPUT="$("$TICKTICK" tasks create --title "should fail" --project "$TEST_PROJECT" --remind 15m 2>&1)"
+REMIND_NODUE_EXIT=$?
+set -e
+[ $REMIND_NODUE_EXIT -ne 0 ] \
+  || fail "create with --remind and no --due should have failed: $REMIND_NODUE_OUTPUT"
+echo "$REMIND_NODUE_OUTPUT" | grep -q "requires --due" \
+  || fail "no --due error didn't mention requires --due: $REMIND_NODUE_OUTPUT"
+ok "create --remind without --due is rejected with clear message"
+
+"$TICKTICK" tasks delete --id "$REMIND_TASK_ID" --project "$PROJECT_ID" >/dev/null \
+  || fail "cleanup of reminder test task failed"
+ok "cleaned up reminder test task"
+
 printf '\n\033[1;32m✓ All smoke tests passed\033[0m\n'

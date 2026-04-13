@@ -1,6 +1,6 @@
 ---
 name: TickTick
-description: TickTick task and list management — create, list, update, complete, delete, move, pin, and bulk-edit tasks; recurring end dates and smart-list filters; manage checklist items; create, update, rename, merge, delete tags; create, update, delete projects (lists); shared-list members and sections. USE WHEN ticktick, add task, create task, new task, my tasks, todos, to-do, inbox, mark done, complete task, finished task, delete task, move task, pin task, unpin, bulk complete, bulk delete, what did I finish, completed tasks, create tag, delete tag, rename tag, merge tags, create list, new project, delete list, rename list, my lists, my projects, what's due, checklist, subtask, login to ticktick, ticktick session.
+description: TickTick task and list management — create, list, update, complete, delete, move, pin, and bulk-edit tasks; recurring end dates, smart-list filters, and time-based reminders; manage checklist items; create, update, rename, merge, delete tags; create, update, delete projects (lists); shared-list members and sections. USE WHEN ticktick, add task, create task, new task, my tasks, todos, to-do, inbox, mark done, complete task, finished task, delete task, move task, pin task, unpin, bulk complete, bulk delete, what did I finish, completed tasks, create tag, delete tag, rename tag, merge tags, create list, new project, delete list, rename list, my lists, my projects, what's due, checklist, subtask, reminder, remind me, alarm, alert before, ping me before, login to ticktick, ticktick session.
 ---
 
 ## ⚠️ MANDATORY TRIGGER
@@ -27,6 +27,9 @@ description: TickTick task and list management — create, list, update, complet
 | "delete the X tag" | → `Workflows/DeleteTag.md` |
 | "rename tag X to Y" | → `Workflows/RenameTag.md` |
 | "merge tag X into Y" | → `Workflows/MergeTags.md` |
+| "remind me 15 minutes before X / add a 1-hour reminder to X / ping me a day before Y" | → `Workflows/AddReminder.md` |
+| "remove the 15-minute reminder from X / drop the 1-hour reminder on Y" | → `Workflows/RemoveReminder.md` |
+| "clear all reminders on X / stop reminding me about Y" | → `Workflows/ClearReminders.md` |
 | "login to ticktick / am I logged in / logout" | → `Workflows/Auth.md` |
 | "create a section / add a kanban column to X" | → `Workflows/CreateSection.md` |
 | "rename the X section / rename column X to Y" | → `Workflows/RenameSection.md` |
@@ -69,6 +72,7 @@ If a `PREFERENCES.md` file exists there, load and apply it. Typical overrides: d
 - ✅ Tasks: smart-list filters — `--due today|tomorrow|overdue|week|next7days|none`, `--pinned`, `--section`, `--assignee`
 - ✅ Tasks: completed-task listing — paginated iterator mode OR closed date-range mode
 - ✅ Tasks: `--section` / `--assignee` on create and update (shared lists)
+- ✅ **Time-based reminders** on tasks: set on create/update, append, remove, clear. Accepts human-friendly offsets (`15m`, `1h`, `1d`, `1d9h`, `at-start`) or raw TRIGGER strings. Multiple reminders per task supported. REPLACE semantics on `tasks update --remind`; APPEND on `tasks remind add`.
 - ✅ Projects (lists): list, get, create, update, delete (delete requires `--confirm`)
 - ✅ Tags: list, create, update, delete, rename, merge *(see Known quirks — only list + create actually persist)*
 - ✅ Sections (kanban columns): list, create, rename, delete (with optional `--reassign` to move tasks first), reorder
@@ -79,7 +83,7 @@ If a `PREFERENCES.md` file exists there, load and apply it. Typical overrides: d
 
 **Known limitations — NOT in v1.3:**
 - ❌ **Nested subtasks** — TickTick has two "subtask" concepts: checklist items (supported here) and true nested child tasks with their own due dates, priorities, and tags (NOT supported). The underlying `ticktick-client` library does not expose `parentId`-based nesting. Tracked as a follow-up requiring reverse-engineering of TickTick v2 endpoints. See `README.md`.
-- ❌ Reminders (time-based or location) — deferred to v1.4
+- ❌ Location-based reminders (time-based reminders ARE supported — see capabilities above)
 - ❌ Focus sessions, habits, calendar, countdowns
 - ❌ 2FA / MFA accounts (library does not support the 2FA login flow)
 - ❌ Listing trash (TickTick's v2 API has a known bug here — the library documents it). Restore works if you already know the task id from prior state.

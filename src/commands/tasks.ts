@@ -2,10 +2,11 @@
  * commands/tasks.ts — task CRUD and move.
  */
 
-import { createAdapter, parseCommandArgs, requireFlag } from '../cli.ts';
-import { AdapterError } from '../adapter.ts';
+import { createAdapter, collectRepeatedFlag, parseCommandArgs, requireFlag } from '../cli.ts';
+import { AdapterError, hydratePatch } from '../adapter.ts';
 import { UsageError } from '../errors.ts';
 import { writeOk, writeHuman, formatTasksTable } from '../output.ts';
+import { parseTriggerOffset, formatTriggerOffset } from '../reminders.ts';
 import { resolveUser } from '../users.ts';
 import type { GlobalOpts } from '../cli.ts';
 import type {
@@ -121,6 +122,19 @@ export async function create(argv: readonly string[], opts: GlobalOpts): Promise
       ? await resolveSectionId(adapter, projectId, flags.section)
       : undefined;
 
+  // Reminders: collected from repeated --remind / CSV. Triggers a
+  // due-date sanity check — TickTick allows reminders on tasks with no
+  // due date, but they will silently never fire. Surface this clearly
+  // rather than letting the user set a reminder that does nothing.
+  const remindOffsets = collectRepeatedFlag(argv, 'remind');
+  if (remindOffsets.length > 0 && flags.due === undefined) {
+    throw new UsageError(
+      "--remind requires --due. TickTick reminders only fire on tasks that have a due date; setting reminders without a due date is a no-op.",
+    );
+  }
+  const reminders =
+    remindOffsets.length > 0 ? remindOffsets.map(parseTriggerOffset) : undefined;
+
   const draft: TaskDraft = {
     title,
     ...(projectId !== undefined && { projectId }),
@@ -134,12 +148,17 @@ export async function create(argv: readonly string[], opts: GlobalOpts): Promise
     ...(flags['repeat-end'] !== undefined && { repeatEndDate: flags['repeat-end'] }),
     ...(flags.assignee !== undefined && { assignee }),
     ...(columnId !== undefined && { columnId }),
+    ...(reminders !== undefined && { reminders }),
   };
 
   const task = await adapter.createTask(draft);
 
   if (opts.human) {
-    writeHuman(`Created task ${task.id}: ${task.title}`);
+    const remindSuffix =
+      task.reminders.length > 0
+        ? ` (reminders: ${task.reminders.map(formatTriggerOffset).join(', ')})`
+        : '';
+    writeHuman(`Created task ${task.id}: ${task.title}${remindSuffix}`);
     return;
   }
   writeOk({ task });
@@ -175,10 +194,17 @@ export async function update(argv: readonly string[], opts: GlobalOpts): Promise
       ? await resolveSectionId(adapter, resolvedProjectId, flags.section)
       : undefined;
 
-  const patch: TaskPatch = {
-    id,
-    projectId: resolvedProjectId,
-    title,
+  // Reminders on update have REPLACE semantics — locked product decision.
+  // When --remind is present we hydrate the full task body via the
+  // shared adapter helper, because TickTick's PUT endpoint wipes any
+  // field the caller didn't re-send. See hydratePatch in adapter.ts.
+  const remindOffsets = collectRepeatedFlag(argv, 'remind');
+  const remindFlagPresent = remindOffsets.length > 0;
+  const reminders = remindFlagPresent ? remindOffsets.map(parseTriggerOffset) : undefined;
+  const currentForRemind = remindFlagPresent ? await adapter.getTask(id) : null;
+  const previousReminders = currentForRemind?.reminders;
+
+  const userOverlay: Partial<TaskPatch> = {
     ...(flags.content !== undefined && { content: flags.content }),
     ...(flags.priority !== undefined && { priority: parsePriority(flags.priority) }),
     ...(flags.due !== undefined && { dueDate: flags.due }),
@@ -191,13 +217,33 @@ export async function update(argv: readonly string[], opts: GlobalOpts): Promise
     ...(columnId !== undefined && { columnId }),
   };
 
+  const patch: TaskPatch =
+    currentForRemind && reminders !== undefined
+      ? hydratePatch(currentForRemind, resolvedProjectId, reminders, { title, ...userOverlay })
+      : {
+          id,
+          projectId: resolvedProjectId,
+          title,
+          ...userOverlay,
+        };
+
   const task = await adapter.updateTask(patch);
 
   if (opts.human) {
-    writeHuman(`Updated task ${task.id}: ${task.title}`);
+    let line = `Updated task ${task.id}: ${task.title}`;
+    if (reminders !== undefined) {
+      const prev = previousReminders ?? [];
+      const next = task.reminders;
+      const nextHuman = next.length > 0 ? next.map(formatTriggerOffset).join(', ') : '(none)';
+      line += `\nReplaced ${prev.length} existing reminder${prev.length === 1 ? '' : 's'} → [${nextHuman}]`;
+    }
+    writeHuman(line);
     return;
   }
-  writeOk({ task });
+  writeOk({
+    task,
+    ...(reminders !== undefined && { previousReminders: previousReminders ?? [] }),
+  });
 }
 
 // ──────────────────────────────────────────────────────────────────
@@ -265,6 +311,95 @@ export async function move(argv: readonly string[], opts: GlobalOpts): Promise<v
     note:
       'TickTick implements moves as copy+delete. The task has a NEW id. Update any references to the old id.',
   });
+}
+
+// ──────────────────────────────────────────────────────────────────
+// remind add / remove / clear
+// ──────────────────────────────────────────────────────────────────
+
+export async function remindAdd(argv: readonly string[], opts: GlobalOpts): Promise<void> {
+  const { flags } = parseCommandArgs(argv);
+  const id = requireFlag(flags, 'id', 'task id');
+  const offsetRaw = requireFlag(flags, 'offset', 'reminder offset (e.g. 15m, 1h, 1d)');
+  const trigger = parseTriggerOffset(offsetRaw);
+
+  const adapter = createAdapter();
+  const projectId = await resolveTaskProjectId(adapter, id, flags.project);
+  const before = await adapter.getTask(id);
+  if (before === null) throw new AdapterError('NOT_FOUND', `Task ${id} not found`);
+  // No-op if the trigger is already present — TickTick allows duplicate
+  // reminders but they're user-confusing.
+  const next = before.reminders.includes(trigger)
+    ? before.reminders
+    : [...before.reminders, trigger];
+  // Reminders only fire on tasks that have a due date; surface the gap
+  // without blocking since the user may set a due date later.
+  const noDue = before.dueDate === null;
+
+  const task = await adapter.setReminders(before, projectId, next);
+
+  if (opts.human) {
+    const human = task.reminders.map(formatTriggerOffset).join(', ') || '(none)';
+    let line = `Added reminder ${formatTriggerOffset(trigger)} → task now has [${human}]`;
+    if (noDue) line += `\n⚠️  Task has no due date — reminder will not fire.`;
+    writeHuman(line);
+    return;
+  }
+  writeOk({
+    task,
+    addedReminder: trigger,
+    ...(noDue && { warning: 'Task has no due date — reminder will not fire.' }),
+  });
+}
+
+export async function remindRemove(argv: readonly string[], opts: GlobalOpts): Promise<void> {
+  const { flags } = parseCommandArgs(argv);
+  const id = requireFlag(flags, 'id', 'task id');
+  const offsetRaw = requireFlag(flags, 'offset', 'reminder offset to remove');
+  const trigger = parseTriggerOffset(offsetRaw);
+
+  const adapter = createAdapter();
+  const projectId = await resolveTaskProjectId(adapter, id, flags.project);
+  const before = await adapter.getTask(id);
+  if (before === null) throw new AdapterError('NOT_FOUND', `Task ${id} not found`);
+  const wasPresent = before.reminders.includes(trigger);
+  const next = before.reminders.filter((t) => t !== trigger);
+
+  const task = await adapter.setReminders(before, projectId, next);
+
+  if (opts.human) {
+    const remaining = task.reminders.map(formatTriggerOffset).join(', ') || '(none)';
+    if (!wasPresent) {
+      writeHuman(
+        `No reminder matching ${formatTriggerOffset(trigger)} on task ${id} — nothing changed. Current: [${remaining}]`,
+      );
+    } else {
+      writeHuman(`Removed reminder ${formatTriggerOffset(trigger)} → task now has [${remaining}]`);
+    }
+    return;
+  }
+  writeOk({ task, removedReminder: trigger, matched: wasPresent });
+}
+
+export async function remindClear(argv: readonly string[], opts: GlobalOpts): Promise<void> {
+  const { flags } = parseCommandArgs(argv);
+  const id = requireFlag(flags, 'id', 'task id');
+
+  const adapter = createAdapter();
+  const projectId = await resolveTaskProjectId(adapter, id, flags.project);
+  const before = await adapter.getTask(id);
+  if (before === null) throw new AdapterError('NOT_FOUND', `Task ${id} not found`);
+  const previousReminders = before.reminders;
+
+  const task = await adapter.setReminders(before, projectId, []);
+
+  if (opts.human) {
+    writeHuman(
+      `Cleared ${previousReminders.length} reminder${previousReminders.length === 1 ? '' : 's'} from task ${id}`,
+    );
+    return;
+  }
+  writeOk({ task, previousReminders });
 }
 
 // ──────────────────────────────────────────────────────────────────
