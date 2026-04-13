@@ -1,6 +1,6 @@
 ---
 name: TickTick
-description: TickTick task and list management — create, list, update, complete, delete, and move tasks; manage checklist items; list projects and tags. USE WHEN ticktick, add task, create task, new task, my tasks, todos, to-do, inbox, mark done, complete task, finished task, delete task, move task, my lists, my projects, what's due, checklist, subtask, login to ticktick, ticktick session.
+description: TickTick task and list management — create, list, update, complete, delete, and move tasks; manage checklist items and time-based reminders; list projects and tags. USE WHEN ticktick, add task, create task, new task, my tasks, todos, to-do, inbox, mark done, complete task, finished task, delete task, move task, my lists, my projects, what's due, checklist, subtask, reminder, remind me, alarm, alert before, ping me before, login to ticktick, ticktick session.
 ---
 
 ## ⚠️ MANDATORY TRIGGER
@@ -15,6 +15,9 @@ description: TickTick task and list management — create, list, update, complet
 | "delete task X / remove task X" | → `Workflows/DeleteTask.md` |
 | "move task X to list Y" | → `Workflows/MoveTask.md` |
 | "what lists do I have / show me my projects" | → `Workflows/ListProjects.md` |
+| "remind me 15 minutes before X / add a 1-hour reminder to X / ping me a day before Y" | → `Workflows/AddReminder.md` |
+| "remove the 15-minute reminder from X / drop the 1-hour reminder on Y" | → `Workflows/RemoveReminder.md` |
+| "clear all reminders on X / stop reminding me about Y" | → `Workflows/ClearReminders.md` |
 | "login to ticktick / am I logged in / logout" | → `Workflows/Auth.md` |
 
 ## Customization
@@ -47,6 +50,7 @@ If a `PREFERENCES.md` file exists there, load and apply it. Typical overrides: d
 
 **Supported in v1:**
 - ✅ Tasks: list (with filters), get, create, update, complete, delete, move between lists
+- ✅ **Time-based reminders** on tasks: set on create/update, append, remove, clear. Accepts human-friendly offsets (`15m`, `1h`, `1d`, `1d9h`, `at-start`) or raw TRIGGER strings. Multiple reminders per task supported. REPLACE semantics on `tasks update --remind`; APPEND on `tasks remind add`.
 - ✅ Projects (lists): list, get
 - ✅ Tags: list
 - ✅ **Checklist items** inside a task: list, add, complete, delete

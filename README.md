@@ -11,6 +11,7 @@ Uses the **unofficial v2 TickTick API** (the same one the ticktick.com web app u
 | Tasks — list / get / create / update / complete / delete | ✅ |
 | Tasks — move between lists | ✅ *(with caveat: returns new id; see below)* |
 | Tasks — filter by project, status, due window, tag, limit | ✅ |
+| Tasks — time-based reminders (multi, RFC-5545 TRIGGER) | ✅ *(REPLACE on `tasks update --remind`, APPEND via `tasks remind add`)* |
 | Projects (lists) — list / get | ✅ |
 | Tags — list | ✅ |
 | Checklist items inside a task — list / add / complete / delete | ✅ |
