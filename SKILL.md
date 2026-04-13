@@ -88,7 +88,7 @@ If a `PREFERENCES.md` file exists there, load and apply it. Typical overrides: d
 
 **Known limitations — NOT in v1.3:**
 - ⚠️ **Parent delete orphans children.** TickTick does not cascade-delete nested subtasks. Deleting a parent leaves its children in place with their parentId still pointing at the deleted parent. The CLI surfaces this in the delete response so the agent can decide whether to follow up.
-- ❌ Location-based reminders (time-based reminders ARE supported — see capabilities above)
+- ⏳ **Location-based reminders** — CLI surface not yet exposed in v1.3, but the underlying API fully supports them (verified 2026-04-13 via round-trip probe and iPhone geofence QA). A future PLAN_06 (~2h) would add `--location-lat/--lng/--radius/--trigger` flags. If the user asks for location reminders today, tell them the API supports it and a short implementation plan would ship the CLI; don't claim it's impossible.
 - ❌ Focus sessions, habits, calendar, countdowns
 - ❌ 2FA / MFA accounts (library does not support the 2FA login flow)
 - ❌ Listing trash (TickTick's v2 API has a known bug here — the library documents it). Restore works if you already know the task id from prior state.

@@ -45,7 +45,7 @@ Uses the **unofficial v2 TickTick API** (the same one the ticktick.com web app u
 
 **Other intentional gaps in v1.3:**
 
-- ❌ **Location-based reminders** — not supported. Time-based reminders ARE supported (see table above); the library strips the `reminders[]` field on read and ignores it on write, so the adapter recovers it via raw cast and hydrates a full-task PUT on every reminder edit.
+- ⏳ **Location-based reminders** — CLI surface not yet shipped in v1.3. The API fully supports them: verified 2026-04-13 via round-trip writes to the `location` field (`{alias, loc:{longitude,latitude}, radius, transitionType, address}`), and an iPhone geofence QA test confirmed API-set geofences fire push notifications within seconds. A future `PLAN_06_location_reminders.md` (~2h estimate) would add `--location-lat/--lng/--radius/--trigger arrive|leave` flags on task create/update. Research artifacts live in `~/.claude/MEMORY/WORK/20260412-220041_ticktick-task-gaps-plan/PLANS/RESEARCH/RESEARCH_location_reminders.md`.
 - ❌ **2FA / MFA accounts** — the library does not implement the 2FA login flow. Accounts with 2FA enabled will fail at login.
 - ❌ **Focus sessions, habits, calendar events, countdowns** — not exposed in this skill.
 - ⚠️ **Trash listing** — TickTick's v2 API has a known bug where the `status=-1` (trash) filter is ignored. Deleted tasks cannot be listed through the skill; use the TickTick web UI to find the id, then `tasks restore --id <id> --project <pid>` works.
