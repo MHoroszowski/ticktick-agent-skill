@@ -149,6 +149,8 @@ async function routeTasks(argv: readonly string[], opts: GlobalOpts): Promise<vo
       return tasks.completed(rest, opts);
     case 'remind':
       return routeTasksRemind(rest, opts);
+    case 'location':
+      return routeTasksLocation(rest, opts);
     case 'indent':
       return tasks.indent(rest, opts);
     case 'promote':
@@ -170,6 +172,23 @@ async function routeTasksRemind(argv: readonly string[], opts: GlobalOpts): Prom
     default:
       throw new UsageError(
         `Unknown 'tasks remind' subcommand: ${sub ?? '(none)'}. Expected: add, remove, clear.`,
+      );
+  }
+}
+
+// Location reminders (geofences). Set/replace happens via `tasks create`
+// and `tasks update` with the --location-* flags; only `clear` needs a
+// dedicated subcommand because the patch endpoint silently no-ops every
+// "null" shape. See `locationClear` in commands/tasks.ts for the adapter
+// escape hatch.
+async function routeTasksLocation(argv: readonly string[], opts: GlobalOpts): Promise<void> {
+  const [sub, ...rest] = argv;
+  switch (sub) {
+    case 'clear':
+      return tasks.locationClear(rest, opts);
+    default:
+      throw new UsageError(
+        `Unknown 'tasks location' subcommand: ${sub ?? '(none)'}. Expected: clear.`,
       );
   }
 }
@@ -440,12 +459,31 @@ COMMANDS
                                            Requires --due.
     --parent <taskId>                      create as a child of <taskId>
                                            (project auto-resolved from parent)
+    --location-lat <num>                   geofence reminder latitude in [-90, 90].
+    --location-lng <num>                   geofence reminder longitude in [-180, 180].
+                                           --location-lat and --location-lng MUST
+                                           be passed together (half a coordinate
+                                           is silently coerced to null and the
+                                           geofence won't fire).
+    --location-radius <m>                  geofence radius in meters (default 100,
+                                           positive integer). 50m is tight, 200m
+                                           is lenient.
+    --location-trigger arrive|leave        when to fire (default: arrive).
+                                           arrive = entering the radius;
+                                           leave = exiting it.
+    --location-alias <text>                friendly label for the location, e.g.
+                                           "Home" / "Work" / "Dry Cleaner".
+    --location-address <text>              full street address (display only).
   tasks update --id <id> --project <pid> [flags]
                                            Update a task (same optional fields).
                                            --remind REPLACES all existing
                                            reminders (use 'tasks remind add'
                                            to append, 'tasks remind clear'
                                            to remove all).
+                                           --location-* sets/replaces the geofence
+                                           in place. Use 'tasks location clear' to
+                                           remove a geofence — passing
+                                           --location-* flags can only set, not clear.
                                            Note: --parent is NOT accepted on update;
                                            use 'tasks indent' / 'tasks promote'.
   tasks complete --id <id> [--project <pid>]
@@ -475,6 +513,10 @@ COMMANDS
                                            Remove a specific reminder by offset.
   tasks remind clear --id <id> [--project <pid>]
                                            Remove all reminders from a task.
+  tasks location clear --id <id> [--project <pid>]
+                                           Remove the geofence reminder from a task.
+                                           (Set/replace via 'tasks create' or
+                                           'tasks update' with --location-* flags.)
   tasks indent --id <id> --under <parentId> [--project <pid>]
                                            Make <id> a nested subtask of <parentId>.
                                            In-place (id is preserved).

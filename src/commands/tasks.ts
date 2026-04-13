@@ -17,8 +17,102 @@ import type {
   TaskPriorityName,
   TaskStatus,
   TaskListFilters,
+  TaskLocation,
   DueFilter,
 } from '../adapter.ts';
+
+// ──────────────────────────────────────────────────────────────────
+// Location flag parsing — shared between create and update
+// ──────────────────────────────────────────────────────────────────
+
+/**
+ * Parse the `--location-*` flag set into a {@link TaskLocation} object,
+ * or return `undefined` if no location flags were passed. Throws
+ * `UsageError` if any location flag is present but `--location-lat` and
+ * `--location-lng` aren't both given (the long-form keys are required as
+ * a pair — half a coordinate is silently coerced to nulls server-side
+ * and produces an unfireable geofence).
+ *
+ * Flag defaults (only applied when at least one location flag is passed):
+ *   --location-radius   → 100 (meters)
+ *   --location-trigger  → "arrive" (transitionType: 1)
+ *   --location-alias    → null
+ *   --location-address  → null
+ *
+ * Note on key naming: TickTick's wire shape uses `loc.longitude` and
+ * `loc.latitude` — sending `loc.lng/lat` causes the server to silently
+ * coerce both to null. That's why the CLI flags are explicit
+ * `--location-lat` / `--location-lng` (matching common short usage) but
+ * the adapter writes the long-form keys on the wire.
+ */
+function buildLocationFromFlags(
+  flags: Record<string, string>,
+): TaskLocation | undefined {
+  const LOCATION_FLAG_KEYS = [
+    'location-lat',
+    'location-lng',
+    'location-radius',
+    'location-trigger',
+    'location-alias',
+    'location-address',
+  ];
+  const anyLocationFlag = LOCATION_FLAG_KEYS.some((k) => flags[k] !== undefined);
+  if (!anyLocationFlag) return undefined;
+
+  const latRaw = flags['location-lat'];
+  const lngRaw = flags['location-lng'];
+  if (latRaw === undefined || lngRaw === undefined) {
+    const missing: string[] = [];
+    if (latRaw === undefined) missing.push('--location-lat');
+    if (lngRaw === undefined) missing.push('--location-lng');
+    throw new UsageError(
+      `${missing.join(' and ')} required when any --location-* flag is passed. ` +
+        `--location-lat and --location-lng must always be passed together — half a ` +
+        `coordinate is coerced to null server-side and the geofence won't fire.`,
+    );
+  }
+
+  const lat = Number.parseFloat(latRaw);
+  if (!Number.isFinite(lat) || lat < -90 || lat > 90) {
+    throw new UsageError(`--location-lat must be a number in [-90, 90], got: ${latRaw}`);
+  }
+  const lng = Number.parseFloat(lngRaw);
+  if (!Number.isFinite(lng) || lng < -180 || lng > 180) {
+    throw new UsageError(`--location-lng must be a number in [-180, 180], got: ${lngRaw}`);
+  }
+
+  const radiusRaw = flags['location-radius'];
+  let radius = 100;
+  if (radiusRaw !== undefined) {
+    const n = Number.parseInt(radiusRaw, 10);
+    if (!Number.isFinite(n) || n <= 0) {
+      throw new UsageError(
+        `--location-radius must be a positive integer (meters), got: ${radiusRaw}`,
+      );
+    }
+    radius = n;
+  }
+
+  const triggerRaw = flags['location-trigger'] ?? 'arrive';
+  let transitionType: 1 | 2;
+  if (triggerRaw === 'arrive') transitionType = 1;
+  else if (triggerRaw === 'leave') transitionType = 2;
+  else {
+    throw new UsageError(
+      `--location-trigger must be 'arrive' or 'leave', got: ${triggerRaw}`,
+    );
+  }
+
+  return {
+    alias: flags['location-alias'] ?? null,
+    loc: { longitude: lng, latitude: lat },
+    radius,
+    transitionType,
+    shortAddress: null,
+    address: flags['location-address'] ?? null,
+    removed: false,
+  };
+}
 
 // ──────────────────────────────────────────────────────────────────
 // list
@@ -227,6 +321,11 @@ export async function create(argv: readonly string[], opts: GlobalOpts): Promise
   const reminders =
     remindOffsets.length > 0 ? remindOffsets.map(parseTriggerOffset) : undefined;
 
+  // Geofence reminder flags. All six --location-* flags collapse into one
+  // TaskLocation object. Throws USAGE if --location-lat and --location-lng
+  // aren't passed together when any location flag is present.
+  const location = buildLocationFromFlags(flags);
+
   const draft: TaskDraft = {
     title,
     ...(projectId !== undefined && { projectId }),
@@ -242,6 +341,7 @@ export async function create(argv: readonly string[], opts: GlobalOpts): Promise
     ...(columnId !== undefined && { columnId }),
     ...(reminders !== undefined && { reminders }),
     ...(parentId !== undefined && { parentId }),
+    ...(location !== undefined && { location }),
   };
 
   const task = await adapter.createTask(draft);
@@ -298,8 +398,24 @@ export async function update(argv: readonly string[], opts: GlobalOpts): Promise
   const remindOffsets = collectRepeatedFlag(argv, 'remind');
   const remindFlagPresent = remindOffsets.length > 0;
   const reminders = remindFlagPresent ? remindOffsets.map(parseTriggerOffset) : undefined;
-  const currentForRemind = remindFlagPresent ? await adapter.getTask(id) : null;
-  const previousReminders = currentForRemind?.reminders;
+
+  // Geofence reminder flags. Collapses all six --location-* flags into one
+  // TaskLocation. Same UsageError behaviour as on create. Same wipe risk
+  // as reminders: a sparse `{id, projectId, title, location}` body
+  // wipes other fields server-side, so when --location-* is present we
+  // also hydrate the full body — same hydratePatch helper, with an
+  // empty reminders pass-through when --remind wasn't given.
+  const location = buildLocationFromFlags(flags);
+  const locationFlagPresent = location !== undefined;
+
+  // Hydrate when EITHER --remind OR --location-* is present. The patch
+  // endpoint's full-body-wipe semantics affect both kinds of updates.
+  const needsHydration = remindFlagPresent || locationFlagPresent;
+  const currentForHydrate = needsHydration ? await adapter.getTask(id) : null;
+  if (needsHydration && currentForHydrate === null) {
+    throw new AdapterError('NOT_FOUND', `Task ${id} not found`);
+  }
+  const previousReminders = remindFlagPresent ? currentForHydrate?.reminders : undefined;
 
   const userOverlay: Partial<TaskPatch> = {
     ...(flags.content !== undefined && { content: flags.content }),
@@ -312,17 +428,26 @@ export async function update(argv: readonly string[], opts: GlobalOpts): Promise
     ...(flags['repeat-end'] !== undefined && { repeatEndDate: flags['repeat-end'] }),
     ...(flags.assignee !== undefined && { assignee }),
     ...(columnId !== undefined && { columnId }),
+    ...(location !== undefined && { location }),
   };
 
-  const patch: TaskPatch =
-    currentForRemind && reminders !== undefined
-      ? hydratePatch(currentForRemind, resolvedProjectId, reminders, { title, ...userOverlay })
-      : {
-          id,
-          projectId: resolvedProjectId,
-          title,
-          ...userOverlay,
-        };
+  // When hydrating, hydratePatch carries forward the existing reminders
+  // (via its `reminders` parameter) — pass `previousReminders ?? []`
+  // so a location-only update preserves whatever reminders were there.
+  // When --remind is also present, the new reminders array replaces them.
+  const patch: TaskPatch = currentForHydrate
+    ? hydratePatch(
+        currentForHydrate,
+        resolvedProjectId,
+        reminders ?? currentForHydrate.reminders,
+        { title, ...userOverlay },
+      )
+    : {
+        id,
+        projectId: resolvedProjectId,
+        title,
+        ...userOverlay,
+      };
 
   const task = await adapter.updateTask(patch);
 
@@ -518,6 +643,47 @@ export async function remindClear(argv: readonly string[], opts: GlobalOpts): Pr
     return;
   }
   writeOk({ task, previousReminders });
+}
+
+// ──────────────────────────────────────────────────────────────────
+// location clear — remove the geofence reminder from a task
+// ──────────────────────────────────────────────────────────────────
+
+/**
+ * Remove the geofence reminder from a task. Set/replace happens via
+ * `tasks create`/`tasks update --location-*`; only the clear case needs
+ * a dedicated command because the patch endpoint silently no-ops every
+ * "null" shape we tried (location:null, location:{}, location:{loc:null}).
+ * The adapter routes this through the batch-endpoint full-body-replace
+ * pattern with `removed: true` on the existing location object — same
+ * escape-hatch shape as `unpinTask`.
+ */
+export async function locationClear(argv: readonly string[], opts: GlobalOpts): Promise<void> {
+  const { flags } = parseCommandArgs(argv);
+  const id = requireFlag(flags, 'id', 'task id');
+
+  const adapter = createAdapter();
+  const projectId = await resolveTaskProjectId(adapter, id, flags.project);
+  const before = await adapter.getTask(id);
+  if (before === null) throw new AdapterError('NOT_FOUND', `Task ${id} not found`);
+  const previousLocation = before.location;
+
+  const task = await adapter.clearLocation(id, projectId);
+
+  if (opts.human) {
+    if (previousLocation === null) {
+      writeHuman(`Task ${id} has no location to clear`);
+    } else {
+      const label =
+        previousLocation.alias ??
+        (previousLocation.loc
+          ? `${previousLocation.loc.latitude.toFixed(4)},${previousLocation.loc.longitude.toFixed(4)}`
+          : 'unknown');
+      writeHuman(`Cleared location (${label}) from task ${id}`);
+    }
+    return;
+  }
+  writeOk({ task, previousLocation });
 }
 
 // ──────────────────────────────────────────────────────────────────

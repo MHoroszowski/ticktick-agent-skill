@@ -90,6 +90,37 @@ export type ChecklistItem = {
   readonly sortOrder: number | null;
 };
 
+/**
+ * Geofence reminder attached to a task. TickTick supports exactly one
+ * location per task — there is no array, no polygon, no multi-zone. The
+ * mobile app fires a push notification when the user's phone crosses the
+ * boundary, in the direction specified by `transitionType`.
+ *
+ * Wire shape verified via PLAN_05 round-trip writes and re-confirmed in
+ * PLAN_06 phase-A probe (2026-04-13). Note specifically:
+ *   - `loc.longitude` and `loc.latitude` use the LONG-FORM keys. Sending
+ *     `loc.lng/lat` causes the server to silently coerce both to null,
+ *     producing an unfireable geofence.
+ *   - `transitionType` is 1 (arrive) or 2 (leave). Other integers may be
+ *     accepted but only 1/2 are documented to fire reminders.
+ *   - `removed: true` is the only shape that clears the field server-side
+ *     when sent through `/api/v2/batch/task` with a full task body. The
+ *     library's patch endpoint silently no-ops every clear shape we tried
+ *     (location:null, location:{}, location:{loc:null}, omission). See
+ *     `clearLocation` below for the implementation.
+ *   - iPhone push delivery for API-set geofences is verified end-to-end
+ *     (manual QA on 2026-04-13). No mobile-permission caveat needed.
+ */
+export type TaskLocation = {
+  readonly alias: string | null;
+  readonly loc: { readonly longitude: number; readonly latitude: number } | null;
+  readonly radius: number;
+  readonly transitionType: 1 | 2 | null;
+  readonly shortAddress: string | null;
+  readonly address: string | null;
+  readonly removed: boolean | null;
+};
+
 export type Task = {
   readonly id: string;
   readonly projectId: string;
@@ -154,6 +185,14 @@ export type Task = {
    * list of children regardless of mirror state.
    */
   readonly childIds: readonly string[];
+  /**
+   * Geofence reminder. Null when the task has no location attached. The
+   * library's TickTickTask type strips this field; we recover it via a
+   * raw cast in `normalizeTask`. To set/replace, pass `location` on a
+   * draft or patch. To clear, use `clearLocation()` — the patch endpoint
+   * silently no-ops every "null" shape we tried. See {@link TaskLocation}.
+   */
+  readonly location: TaskLocation | null;
 };
 
 export type Project = {
@@ -240,6 +279,17 @@ export type TaskDraft = {
    * not mutate parentId; use `indentTask()` / `promoteTask()` instead.
    */
   readonly parentId?: string | null;
+  /**
+   * Geofence to attach. Tri-state semantics:
+   *   - `undefined` (omitted) = leave the existing location untouched
+   *   - `TaskLocation` object = set or replace the location
+   *   - `null` = INTENT to clear, but the patch endpoint silently no-ops
+   *     this. Callers MUST go through `clearLocation()` instead. Setting
+   *     `null` here on `updateTask` is a no-op against the wire.
+   *
+   * On `createTask`, undefined and null both mean "no location."
+   */
+  readonly location?: TaskLocation | null;
 };
 
 export type TaskPatch = TaskDraft & {
@@ -462,6 +512,15 @@ export interface TickTickAdapter {
   removeReminder(taskId: string, projectId: string, trigger: string): Promise<Task>;
   clearReminders(taskId: string, projectId: string): Promise<Task>;
 
+  // Location reminders (geofences). One per task. Set/replace via the
+  // `location` field on a draft or patch — the patch endpoint honors
+  // location field updates. Clear is the awkward case: every "null" shape
+  // we tried via the patch endpoint silently no-ops, so `clearLocation`
+  // routes through the batch-endpoint full-body-replace pattern with
+  // `removed: true` on the existing location object. Same escape-hatch
+  // pattern as `unpinTask`. See PLAN_06 phase-A probe results.
+  clearLocation(taskId: string, projectId: string): Promise<Task>;
+
   // Nested subtasks (parentId-based child tasks). Distinct from checklist
   // items — see the adapter's header comment for the full naming policy.
   /**
@@ -629,12 +688,28 @@ export class TickTickClientAdapter implements TickTickAdapter {
       // parentId mutations sent via PATCH (POST /api/v2/task/{id}). To
       // re-parent an existing task use indentTask()/promoteTask().
       ...(draft.parentId !== undefined && { parentId: draft.parentId }),
+      // location: pass through verbatim. The library's typed draft strips
+      // the field but the wire shape accepts it. The library's response
+      // mapper ALSO strips location from the create response, so the
+      // Task we return here will have location:null even though the
+      // server stored it correctly — callers who need to read it back
+      // immediately should re-fetch via getTask().
+      ...(draft.location !== undefined && { location: draft.location }),
     };
     // Cast through unknown because the library's TickTickTaskDraft type
-    // doesn't include assignee/columnId/reminders/parentId — we're
+    // doesn't include assignee/columnId/reminders/parentId/location — we're
     // intentionally bypassing. The library's request layer passes the body
     // through verbatim, so TickTick receives the extra fields.
     const created = await this.#client.tasks.create(rawDraft as unknown as TickTickTaskDraft);
+    // The library's create response mapper strips location, so the
+    // immediate response won't have it. Re-fetch via tasks.list() if the
+    // draft included a location, so the returned Task accurately
+    // reflects what's stored. Cheap cost (one extra list) for correctness
+    // on the create-with-location path; no overhead for create-without.
+    if (draft.location !== undefined) {
+      const refetched = await this.getTask(created.id);
+      if (refetched) return refetched;
+    }
     return normalizeTask(created);
   }
 
@@ -674,8 +749,20 @@ export class TickTickClientAdapter implements TickTickAdapter {
       // Preserve parentId across update so callers that just want to
       // change a child's title don't accidentally promote it.
       ...(existingParentId !== null && { parentId: existingParentId }),
+      // location: pass through verbatim. The patch endpoint honors
+      // location field updates (verified PLAN_06 phase A). Callers MUST
+      // use clearLocation() to actually clear — passing `null` here
+      // silently no-ops at the server level.
+      ...(patch.location !== undefined && { location: patch.location }),
     };
     const updated = await this.#client.tasks.update(rawPatch as unknown as TickTickTaskUpdate);
+    // Same as createTask: the library's update response mapper strips
+    // location from the returned object. Re-fetch when the patch carried
+    // a location so the returned Task is accurate.
+    if (patch.location !== undefined) {
+      const refetched = await this.getTask(patch.id);
+      if (refetched) return refetched;
+    }
     return normalizeTask(updated);
   }
 
@@ -850,6 +937,11 @@ export class TickTickClientAdapter implements TickTickAdapter {
       ...(draft.assignee !== undefined && { assignee: draft.assignee }),
       ...(draft.columnId !== undefined && { columnId: draft.columnId }),
       ...(draft.reminders !== undefined && { reminders: draft.reminders.map(wrapReminder) }),
+      // location: pass through verbatim. The library's typed draft strips
+      // the field but the wire shape accepts it. Tri-state: undefined =
+      // omit; object = set/replace; null = the patch endpoint silently
+      // ignores this — callers must use clearLocation() to actually clear.
+      ...(draft.location !== undefined && { location: draft.location }),
     };
   }
 
@@ -897,6 +989,62 @@ export class TickTickClientAdapter implements TickTickAdapter {
     const current = await this.getTask(taskId);
     if (current === null) throw new AdapterError('NOT_FOUND', `Task ${taskId} not found`);
     return this.setReminders(current, projectId, []);
+  }
+
+  // ── Location reminders (geofences) ──
+  //
+  // CREATE/UPDATE: the patch endpoint (`POST /api/v2/task/{id}`, used by
+  // library `tasks.update()`) honors `location` field updates. Pass
+  // `location` on a TaskDraft/TaskPatch and `#draftToRaw` will route it
+  // through the standard create/update path.
+  //
+  // CLEAR: the patch endpoint silently no-ops every "null" shape we
+  // tried (location:null, location:{}, location:{loc:null}, omission).
+  // The only shape that actually drops the field server-side is sending
+  // the existing location object with `removed: true` via the batch
+  // endpoint with a full task body. Same pattern as `unpinTask`.
+  // Verified empirically via PLAN_06 phase-A probe on 2026-04-13.
+  async clearLocation(taskId: string, projectId: string): Promise<Task> {
+    void projectId; // accepted for parity with reminders methods; not used on the wire
+    // Re-fetch the raw task via tasks.list() — we need the full body for
+    // the batch endpoint and the ORIGINAL location object so we can flip
+    // its `removed` flag. The normalized Task drops the `removed` field
+    // (collapses to a sentinel) so we can't round-trip through it.
+    const all = await this.#client.tasks.list();
+    const rawTask = all.find((t) => t.id === taskId);
+    if (!rawTask) {
+      throw new AdapterError('NOT_FOUND', `Task ${taskId} not found for clearLocation`);
+    }
+    const fullTask = rawTask as unknown as Record<string, unknown>;
+    const existingLocation = fullTask.location;
+    if (existingLocation === null || existingLocation === undefined) {
+      // Already cleared — nothing to do. Return the normalized task as-is.
+      return normalizeTask(rawTask);
+    }
+    const updateBody = {
+      ...fullTask,
+      location: { ...(existingLocation as Record<string, unknown>), removed: true },
+      modifiedTime: new Date().toISOString(),
+    };
+    const client = this.#client as unknown as {
+      request: <T>(method: string, path: string, body?: unknown) => Promise<T>;
+    };
+    await client.request<unknown>('POST', '/api/v2/batch/task', {
+      add: [],
+      update: [updateBody],
+      delete: [],
+      addAttachments: [],
+      updateAttachments: [],
+      deleteAttachments: [],
+    });
+    // Re-fetch so the returned Task reflects the cleared state. The
+    // server now omits `location` from the response entirely, so
+    // normalizeTask will surface it as null.
+    const after = await this.getTask(taskId);
+    if (after === null) {
+      throw new AdapterError('NOT_FOUND', `Task ${taskId} disappeared after clearLocation`);
+    }
+    return after;
   }
 
   // ── Nested subtasks (parentId) ──
@@ -1438,6 +1586,13 @@ export function hydratePatch(
     ...(current.repeatFlag !== null && { repeatFlag: current.repeatFlag }),
     ...(current.assignee !== null && { assignee: current.assignee }),
     ...(current.columnId !== null && { columnId: current.columnId }),
+    // Preserve the existing location across reminder hydration. Without
+    // this, `tasks update --remind 15m` on a task that has a geofence
+    // would wipe the geofence — the patch endpoint's full-body wipe
+    // semantics affect location the same way they affect every other
+    // unsent field. If the caller passed `--location-*` flags too, the
+    // overlay below will replace this value.
+    ...(current.location !== null && { location: current.location }),
     ...overlay,
     reminders,
   };
@@ -1479,6 +1634,7 @@ function normalizeTask(raw: TickTickTask): Task {
     reminders?: unknown;
     parentId?: string | null;
     childIds?: readonly string[] | null;
+    location?: unknown;
   };
   // parentId comes back as either a string, null, or missing depending on
   // whether the task is a child. We normalize all three to either a
@@ -1510,6 +1666,62 @@ function normalizeTask(raw: TickTickTask): Task {
     reminders: normalizeReminders(r.reminders),
     parentId: rawParentId,
     childIds: rawChildIds,
+    location: normalizeLocation(r.location),
+  };
+}
+
+/**
+ * Pull the location field off a raw task and normalize it into the
+ * adapter's {@link TaskLocation} shape (or null if there's no usable
+ * location). Defensive: returns null for missing, null, non-object, or
+ * for any object whose `loc.longitude/latitude` aren't both numbers — a
+ * geofence with non-numeric coordinates can't fire and shouldn't be
+ * surfaced as if it could.
+ *
+ * The clear-via-batch path leaves a "shell" object behind ({alias:null,
+ * loc:null, ...}); we treat that as "no usable location" too because
+ * `loc === null` means there's nothing for the phone to fence against.
+ * The shell-vs-absent distinction is server-internal trash; the public
+ * API doesn't need to expose it.
+ */
+function normalizeLocation(raw: unknown): TaskLocation | null {
+  if (raw === null || raw === undefined) return null;
+  if (typeof raw !== 'object') return null;
+  const r = raw as {
+    alias?: unknown;
+    loc?: unknown;
+    radius?: unknown;
+    transitionType?: unknown;
+    shortAddress?: unknown;
+    address?: unknown;
+    removed?: unknown;
+  };
+  // `loc` must be a non-null object with numeric longitude+latitude or
+  // there's nothing to fence against. Treat as cleared.
+  let loc: { longitude: number; latitude: number } | null = null;
+  if (r.loc !== null && r.loc !== undefined && typeof r.loc === 'object') {
+    const l = r.loc as { longitude?: unknown; latitude?: unknown };
+    if (typeof l.longitude === 'number' && typeof l.latitude === 'number') {
+      loc = { longitude: l.longitude, latitude: l.latitude };
+    }
+  }
+  if (loc === null) return null;
+  // transitionType: 1 = arrive, 2 = leave. Anything else collapses to null.
+  let transitionType: 1 | 2 | null = null;
+  if (r.transitionType === 1) transitionType = 1;
+  else if (r.transitionType === 2) transitionType = 2;
+  // radius: best-effort number; if missing or non-numeric, default to 0
+  // so the type stays uniform. The CLI layer rejects radius<=0 on input
+  // so we won't see garbage from our own writes; defensive for foreign data.
+  const radius = typeof r.radius === 'number' ? r.radius : 0;
+  return {
+    alias: typeof r.alias === 'string' ? r.alias : null,
+    loc,
+    radius,
+    transitionType,
+    shortAddress: typeof r.shortAddress === 'string' ? r.shortAddress : null,
+    address: typeof r.address === 'string' ? r.address : null,
+    removed: typeof r.removed === 'boolean' ? r.removed : null,
   };
 }
 

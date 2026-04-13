@@ -12,7 +12,7 @@
 import { AdapterError, UsageError, mapLibraryError } from './errors.ts';
 import { getCachedUsers } from './users.ts';
 import { formatTriggerOffset } from './reminders.ts';
-import type { Task, Project, Tag, ChecklistItem } from './adapter.ts';
+import type { Task, Project, Tag, ChecklistItem, TaskLocation } from './adapter.ts';
 
 let debugEnabled = false;
 
@@ -70,6 +70,7 @@ function buildErrorEnvelope(
 // ──────────────────────────────────────────────────────────────────
 
 const REMINDERS_CELL_WIDTH = 12;
+const LOCATION_CELL_WIDTH = 14;
 
 export function formatTasksTable(tasks: readonly Task[]): string {
   if (tasks.length === 0) return '(no tasks)';
@@ -80,6 +81,9 @@ export function formatTasksTable(tasks: readonly Task[]): string {
   // has a reminder — same conditional pattern as the assignee column.
   // Keeps the default narrow table uncluttered for the common case.
   const anyReminders = tasks.some((t) => t.reminders.length > 0);
+  // Only show the 📍 location column when at least one task has a
+  // geofence reminder. Same conditional pattern as the others.
+  const anyLocation = tasks.some((t) => t.location !== null);
 
   const rows = tasks.map((t) => ({
     id: shortenId(t.id),
@@ -89,15 +93,18 @@ export function formatTasksTable(tasks: readonly Task[]): string {
     due: formatDue(t.dueDate),
     assignee: anyAssigned ? resolveAssigneeName(t.assignee, knownUsers) : null,
     reminders: anyReminders ? formatRemindersCompact(t.reminders) : null,
+    location: anyLocation ? formatLocationCompact(t.location) : null,
     title: t.title,
     project: shortenId(t.projectId),
   }));
 
-  // Optional columns (pin, assignee, reminders) are rendered independently
-  // via per-cell formatters that emit empty string when the flag is off.
-  // This keeps the default narrow table uncluttered for the common case
-  // and supports every combination without combinatoric branches.
+  // Optional columns (pin, assignee, reminders, location) are rendered
+  // independently via per-cell formatters that emit empty string when
+  // the flag is off. This keeps the default narrow table uncluttered for
+  // the common case and supports every combination without combinatoric
+  // branches.
   const REMIND_W = REMINDERS_CELL_WIDTH;
+  const LOC_W = LOCATION_CELL_WIDTH;
   const pinHeader = anyPinned ? '📌 ' : '';
   const pinCell = (r: { pin: string }): string => (anyPinned ? `${r.pin} ` : '');
   const assignHeader = anyAssigned ? `${'ASSIGN'.padEnd(10)} ` : '';
@@ -106,20 +113,44 @@ export function formatTasksTable(tasks: readonly Task[]): string {
   const remindHeader = anyReminders ? `${'🔔'.padEnd(REMIND_W)} ` : '';
   const remindCell = (r: { reminders: string | null }): string =>
     anyReminders ? `${(r.reminders ?? '').padEnd(REMIND_W)} ` : '';
+  const locHeader = anyLocation ? `${'📍'.padEnd(LOC_W)} ` : '';
+  const locCell = (r: { location: string | null }): string =>
+    anyLocation ? `${(r.location ?? '').padEnd(LOC_W)} ` : '';
 
   // Title width shrinks as optional columns are added so the table stays
   // within ~120 cols on a typical terminal.
-  const titleW = 50 - (anyAssigned ? 5 : 0) - (anyReminders ? 5 : 0);
+  const titleW =
+    50 - (anyAssigned ? 5 : 0) - (anyReminders ? 5 : 0) - (anyLocation ? 5 : 0);
 
-  const header = `${'ID'.padEnd(9)} ${'STATUS'.padEnd(10)} ${'PRI'} ${pinHeader}${'DUE'.padEnd(16)} ${assignHeader}${remindHeader}${'TITLE'.padEnd(titleW)} ${'PROJECT'}`;
-  const divider = '─'.repeat(Math.min(130, header.length));
+  const header = `${'ID'.padEnd(9)} ${'STATUS'.padEnd(10)} ${'PRI'} ${pinHeader}${'DUE'.padEnd(16)} ${assignHeader}${remindHeader}${locHeader}${'TITLE'.padEnd(titleW)} ${'PROJECT'}`;
+  const divider = '─'.repeat(Math.min(140, header.length));
   const body = rows
     .map(
       (r) =>
-        `${r.id.padEnd(9)} ${r.status} ${r.pri.padEnd(3)} ${pinCell(r)}${r.due.padEnd(16)} ${assignCell(r)}${remindCell(r)}${truncate(r.title, titleW).padEnd(titleW)} ${r.project}`,
+        `${r.id.padEnd(9)} ${r.status} ${r.pri.padEnd(3)} ${pinCell(r)}${r.due.padEnd(16)} ${assignCell(r)}${remindCell(r)}${locCell(r)}${truncate(r.title, titleW).padEnd(titleW)} ${r.project}`,
     )
     .join('\n');
   return `${header}\n${divider}\n${body}`;
+}
+
+/**
+ * Render a {@link TaskLocation} as a compact cell value for the table.
+ * Format: `<label> (<radius>m <a|l>)` where label is the alias (preferred)
+ * or `lat,lng` to 2 decimals, and a/l is arrive/leave. Truncates to
+ * {@link LOCATION_CELL_WIDTH} with a trailing `…` if it would overflow.
+ */
+function formatLocationCompact(location: TaskLocation | null): string {
+  if (location === null) return '';
+  const label =
+    location.alias !== null && location.alias.length > 0
+      ? location.alias
+      : location.loc !== null
+        ? `${location.loc.latitude.toFixed(2)},${location.loc.longitude.toFixed(2)}`
+        : '?';
+  const trigGlyph = location.transitionType === 2 ? 'l' : 'a';
+  const out = `${label} (${location.radius}m ${trigGlyph})`;
+  if (out.length <= LOCATION_CELL_WIDTH) return out;
+  return truncate(out, LOCATION_CELL_WIDTH);
 }
 
 /**
