@@ -24,33 +24,7 @@ Known gaps that are out of scope for v1, tracked for future work.
 
 ---
 
-## 1. Nested subtask support (highest priority)
-
-**What's missing:** Support for TickTick's true nested subtask tree — child tasks linked to a parent task via a `parentId` field, with their own due dates, priorities, tags, and all other task properties. This is distinct from checklist items (`task.items[]`), which ARE supported in v1.
-
-**Why it's not in v1:** The `ticktick-client` library at `jaeyeonling/ticktick-client@0.2.1` does not expose `parentId`-based nesting. A grep of the source confirms zero references to `parentId`, `childIds`, or similar. The library's `createSubtask()` method only patches the `items[]` array.
-
-**What it will take to implement:**
-
-1. **Reverse-engineer the endpoints.** Open TickTick in a browser, open DevTools → Network → filter on XHR, and:
-   - Create a task
-   - Drag another task underneath it to indent it
-   - Capture the exact request (URL, method, body) that ticktick.com sends
-   - Do the same for: promote subtask to top-level, reorder siblings, nest further, unnest
-2. **Confirm the parentId shape.** Is it a field on the task doc? A separate endpoint? A property on the batch update payload? The library's `TickTickTask` type doesn't include `parentId`, which means either the raw API returns it as a field the library strips, or it lives on a different request.
-3. **Extend the fork.** Add the new operations to a new module (`src/modules/subtasks.ts`) or extend `src/modules/tasks.ts`. Keep the API shape consistent with the existing modules.
-4. **Open a PR upstream** to `jaeyeonling/ticktick-client` with the new endpoints. `jaeyeonling` already maintains the library against Playwright captures — they'll likely welcome the contribution.
-5. **Extend the adapter** in `src/adapter.ts` to normalize nested subtasks alongside checklist items. Decide whether to model them as `Task.subtasks?: Task[]` (tree) or `Task.parentId?: string` (flat with reconstruction).
-6. **Add command surface**: `tasks create --parent <id>`, `tasks list --parent <id>`, `tasks promote --id <id>`, `tasks indent --id <id> --under <parentId>`, or similar.
-7. **Extend the smoke test** to exercise the new flow.
-
-**Estimated scope:** 1–2 focused sessions. The reverse-engineering is the unknown — if TickTick's WebSocket path turns out to be the only way, it's significantly harder.
-
-**Why this matters for the user:** The user explicitly said "I use subtasks a lot." Checklist items cover simple cases but won't satisfy structured task decomposition.
-
----
-
-## 2. Engineer agent worktree infrastructure
+## 1. Engineer agent worktree infrastructure
 
 **What happened:** When trying to delegate steps 5–12 of this skill's implementation to the Engineer subagent, the delegation failed:
 ```
@@ -76,7 +50,7 @@ The Engineer agent is configured to run in an isolated git worktree. That requir
 
 ---
 
-## 3. Concurrent-invocation session file race
+## 2. Concurrent-invocation session file race
 
 **What's missing:** If two `./bin/ticktick` invocations run at exactly the same time on a stale session, both will attempt a re-login and both will write to the session file. Last writer wins. No file lock.
 
@@ -86,7 +60,7 @@ The Engineer agent is configured to run in an isolated git worktree. That requir
 
 ---
 
-## 4. `--human` output polish
+## 3. `--human` output polish
 
 The current `formatTasksTable` / `formatProjectsTable` are minimal — fixed column widths, no color, basic alignment. Usable but not pretty.
 
@@ -94,7 +68,7 @@ The current `formatTasksTable` / `formatProjectsTable` are minimal — fixed col
 
 ---
 
-## 5. Natural-language date parsing at the CLI layer
+## 4. Natural-language date parsing at the CLI layer
 
 `tasks create --due "tomorrow at 3pm"` currently fails because the CLI expects ISO 8601. The agent does the conversion today.
 
@@ -102,7 +76,7 @@ The current `formatTasksTable` / `formatProjectsTable` are minimal — fixed col
 
 ---
 
-## 6. `restore` command for recently-deleted tasks
+## 5. `restore` command for recently-deleted tasks
 
 Blocked on the TickTick v2 API bug where `GET /api/v2/project/{id}/tasks?status=-1` returns active tasks, not trashed ones. The library documents this.
 

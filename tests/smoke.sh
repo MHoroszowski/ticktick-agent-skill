@@ -669,4 +669,105 @@ ok "create --remind without --due is rejected with clear message"
   || fail "cleanup of reminder test task failed"
 ok "cleaned up reminder test task"
 
+# ─── 31. nested subtasks: full lifecycle ───
+log "Step 31: nested subtasks lifecycle (create parent → create child → indent → promote → tree → delete-orphans)"
+NS_PARENT_JSON="$("$TICKTICK" tasks create --title "PAI smoke nested parent" --project "$TEST_PROJECT")"
+echo "$NS_PARENT_JSON" | jq -e '.ok == true' >/dev/null \
+  || fail "nested parent create failed: $NS_PARENT_JSON"
+NS_PARENT="$(echo "$NS_PARENT_JSON" | jq -r '.task.id')"
+ok "created nested parent $NS_PARENT"
+
+# 31a: create a child task using --parent (project auto-resolved from parent)
+NS_CHILD1_JSON="$("$TICKTICK" tasks create --title "PAI nested child 1" --parent "$NS_PARENT")"
+echo "$NS_CHILD1_JSON" | jq -e ".ok == true and .task.parentId == \"$NS_PARENT\"" >/dev/null \
+  || fail "child create failed or parentId not echoed: $NS_CHILD1_JSON"
+NS_CHILD1="$(echo "$NS_CHILD1_JSON" | jq -r '.task.id')"
+ok "created child $NS_CHILD1 with parentId set on first write"
+
+# 31b: create a sibling top-level, then indent it under the parent
+NS_CHILD2_JSON="$("$TICKTICK" tasks create --title "PAI nested child 2" --project "$TEST_PROJECT")"
+NS_CHILD2="$(echo "$NS_CHILD2_JSON" | jq -r '.task.id')"
+echo "$NS_CHILD2_JSON" | jq -e '.ok == true and .task.parentId == null' >/dev/null \
+  || fail "child2 should be created top-level: $NS_CHILD2_JSON"
+
+INDENT_JSON="$("$TICKTICK" tasks indent --id "$NS_CHILD2" --under "$NS_PARENT")"
+echo "$INDENT_JSON" | jq -e ".ok == true and .parentId == \"$NS_PARENT\"" >/dev/null \
+  || fail "indent failed: $INDENT_JSON"
+ok "indented child2 under parent via /api/v2/batch/taskParent"
+
+# 31c: list direct children of the parent — both should show
+LIST_PARENT_JSON="$("$TICKTICK" tasks list --parent "$NS_PARENT")"
+echo "$LIST_PARENT_JSON" | jq -e '.ok == true and .count == 2' >/dev/null \
+  || fail "expected 2 children under parent, got: $LIST_PARENT_JSON"
+ok "tasks list --parent returns both children"
+
+# 31d: promote child1 — should leave only child2 as a child
+PROMOTE_JSON="$("$TICKTICK" tasks promote --id "$NS_CHILD1")"
+echo "$PROMOTE_JSON" | jq -e '.ok == true and .parentId == null' >/dev/null \
+  || fail "promote failed: $PROMOTE_JSON"
+LIST_AFTER_PROMOTE_JSON="$("$TICKTICK" tasks list --parent "$NS_PARENT")"
+echo "$LIST_AFTER_PROMOTE_JSON" | jq -e '.ok == true and .count == 1' >/dev/null \
+  || fail "expected 1 child after promote, got: $LIST_AFTER_PROMOTE_JSON"
+# Verify the child1 actually has parentId == null on the server
+GET_CHILD1_JSON="$("$TICKTICK" tasks get --id "$NS_CHILD1")"
+echo "$GET_CHILD1_JSON" | jq -e '.task.parentId == null' >/dev/null \
+  || fail "child1 still has parentId after promote: $GET_CHILD1_JSON"
+ok "promote cleared parentId server-side"
+
+# 31e: error case — indent under self
+set +e
+INDENT_SELF_OUT="$("$TICKTICK" tasks indent --id "$NS_CHILD2" --under "$NS_CHILD2" 2>&1)"
+INDENT_SELF_EXIT=$?
+set -e
+[ $INDENT_SELF_EXIT -eq 2 ] \
+  || fail "indent-self should exit 2 (USAGE), got $INDENT_SELF_EXIT: $INDENT_SELF_OUT"
+ok "indent-under-self correctly rejected"
+
+# 31f: error case — indent under non-existent parent
+set +e
+INDENT_FAKE_OUT="$("$TICKTICK" tasks indent --id "$NS_CHILD2" --under 000000000000000000000000 2>&1)"
+INDENT_FAKE_EXIT=$?
+set -e
+[ $INDENT_FAKE_EXIT -eq 4 ] \
+  || fail "indent-fake should exit 4 (NOT_FOUND), got $INDENT_FAKE_EXIT: $INDENT_FAKE_OUT"
+ok "indent-under-bogus-parent correctly rejected"
+
+# 31g: tree mode — create a grandchild under child2 and verify recursive output
+NS_GC_JSON="$("$TICKTICK" tasks create --title "PAI nested grandchild" --parent "$NS_CHILD2")"
+NS_GC="$(echo "$NS_GC_JSON" | jq -r '.task.id')"
+TREE_JSON="$("$TICKTICK" tasks list --parent "$NS_PARENT" --tree)"
+# Should report 2 nodes total: child2 and the grandchild beneath it
+echo "$TREE_JSON" | jq -e '.ok == true and .count == 2' >/dev/null \
+  || fail "tree mode wrong count: $TREE_JSON"
+# And the tree should be 2 levels deep
+echo "$TREE_JSON" | jq -e ".tree[0].children[0].task.id == \"$NS_GC\"" >/dev/null \
+  || fail "tree mode missing grandchild: $TREE_JSON"
+ok "tree mode renders 2-level recursive children correctly"
+
+# 31h: top-level filter — confirm parent appears, child2/grandchild don't
+TOPLEVEL_JSON="$("$TICKTICK" tasks list --top-level --project "$TEST_PROJECT")"
+echo "$TOPLEVEL_JSON" \
+  | jq -e ".ok == true and ([.tasks[].id] | index(\"$NS_PARENT\") != null) and ([.tasks[].id] | index(\"$NS_CHILD2\") == null) and ([.tasks[].id] | index(\"$NS_GC\") == null)" >/dev/null \
+  || fail "--top-level filter wrong: $TOPLEVEL_JSON"
+ok "--top-level filter excludes nested children"
+
+# 31i: delete parent — children should be ORPHANED, response should surface them
+DELETE_PARENT_JSON="$("$TICKTICK" tasks delete --id "$NS_PARENT")"
+echo "$DELETE_PARENT_JSON" | jq -e '.ok == true and (.orphanedChildren | length) >= 1' >/dev/null \
+  || fail "delete parent didn't surface orphans: $DELETE_PARENT_JSON"
+# Verify child2 still exists with stale parentId
+GET_CHILD2_JSON="$("$TICKTICK" tasks get --id "$NS_CHILD2")"
+echo "$GET_CHILD2_JSON" | jq -e ".ok == true and .task.parentId == \"$NS_PARENT\"" >/dev/null \
+  || fail "child2 should have stale parentId after parent delete: $GET_CHILD2_JSON"
+ok "parent delete orphaned children (as documented)"
+
+# 31j: cleanup the orphans
+"$TICKTICK" tasks delete --id "$NS_GC" >/dev/null \
+  || fail "cleanup grandchild failed"
+"$TICKTICK" tasks delete --id "$NS_CHILD2" >/dev/null \
+  || fail "cleanup child2 failed"
+"$TICKTICK" tasks delete --id "$NS_CHILD1" >/dev/null \
+  || fail "cleanup child1 failed"
+ok "cleaned up nested subtask test tasks"
+
 printf '\n\033[1;32m✓ All smoke tests passed\033[0m\n'

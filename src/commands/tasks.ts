@@ -5,12 +5,13 @@
 import { createAdapter, collectRepeatedFlag, parseCommandArgs, requireFlag } from '../cli.ts';
 import { AdapterError, hydratePatch } from '../adapter.ts';
 import { UsageError } from '../errors.ts';
-import { writeOk, writeHuman, formatTasksTable } from '../output.ts';
+import { writeOk, writeHuman, formatTasksTable, formatTaskTree } from '../output.ts';
 import { parseTriggerOffset, formatTriggerOffset } from '../reminders.ts';
 import { resolveUser } from '../users.ts';
 import type { GlobalOpts } from '../cli.ts';
 import type {
   TickTickAdapter,
+  Task,
   TaskDraft,
   TaskPatch,
   TaskPriorityName,
@@ -59,6 +60,19 @@ export async function list(argv: readonly string[], opts: GlobalOpts): Promise<v
     assigneeFilter = resolveUser(flags.assignee);
   }
 
+  const wantParent = flags.parent;
+  const wantTopLevel = flags['top-level'] === 'true';
+  const wantTree = flags.tree === 'true';
+
+  if (wantParent !== undefined && wantTopLevel) {
+    throw new UsageError('--parent and --top-level are mutually exclusive.');
+  }
+  if (wantTree && wantParent === undefined) {
+    throw new UsageError(
+      '--tree requires --parent <id> so the recursion has a starting root.',
+    );
+  }
+
   const filters: TaskListFilters = {
     ...(projectId !== undefined && { projectId }),
     ...(flags.status !== undefined && { status: parseStatusFilter(flags.status) }),
@@ -68,7 +82,26 @@ export async function list(argv: readonly string[], opts: GlobalOpts): Promise<v
     ...(sectionId !== undefined && { sectionId }),
     ...(assigneeFilter !== undefined && { assignee: assigneeFilter }),
     ...(limit !== undefined && { limit }),
+    ...(wantParent !== undefined && { parentId: wantParent }),
+    ...(wantTopLevel && { topLevelOnly: true }),
   };
+
+  // Tree mode: fetch ALL tasks once, then walk the parent chain client-side.
+  // The /api/v3/batch/check/0 endpoint returns the entire account list in
+  // one call, so this is no more expensive than the flat path.
+  if (wantTree) {
+    const all = await adapter.listTasks({
+      ...(projectId !== undefined && { projectId }),
+      status: 'all',
+    });
+    const tree = buildSubtree(all, wantParent!);
+    if (opts.human) {
+      writeHuman(formatTaskTree(tree));
+      return;
+    }
+    writeOk({ count: countNodes(tree), tree });
+    return;
+  }
 
   const result = await adapter.listTasks(filters);
 
@@ -77,6 +110,42 @@ export async function list(argv: readonly string[], opts: GlobalOpts): Promise<v
     return;
   }
   writeOk({ count: result.length, tasks: result });
+}
+
+// ──────────────────────────────────────────────────────────────────
+// Tree helpers — used by `tasks list --parent <id> --tree`
+// ──────────────────────────────────────────────────────────────────
+
+export type TaskNode = {
+  readonly task: Task;
+  readonly children: readonly TaskNode[];
+};
+
+function buildSubtree(all: readonly Task[], rootId: string): readonly TaskNode[] {
+  // Group tasks by their parentId for O(N) lookup.
+  const byParent = new Map<string, Task[]>();
+  for (const t of all) {
+    if (t.parentId === null) continue;
+    const bucket = byParent.get(t.parentId);
+    if (bucket) {
+      bucket.push(t);
+    } else {
+      byParent.set(t.parentId, [t]);
+    }
+  }
+  const walk = (parentId: string): readonly TaskNode[] => {
+    const direct = byParent.get(parentId) ?? [];
+    return direct.map((t) => ({ task: t, children: walk(t.id) }));
+  };
+  return walk(rootId);
+}
+
+function countNodes(nodes: readonly TaskNode[]): number {
+  let total = 0;
+  for (const n of nodes) {
+    total += 1 + countNodes(n.children);
+  }
+  return total;
 }
 
 // ──────────────────────────────────────────────────────────────────
@@ -107,8 +176,31 @@ export async function create(argv: readonly string[], opts: GlobalOpts): Promise
   const title = requireFlag(flags, 'title', 'task title');
 
   const adapter = createAdapter();
-  const projectId =
-    flags.project !== undefined ? await resolveProjectId(adapter, flags.project) : undefined;
+
+  // --parent makes this a nested subtask. We resolve the parent first so
+  // we can auto-fill the project from the parent if the user didn't pass
+  // --project explicitly. This matches the natural intent: "add a child
+  // under <parent>" doesn't need to know which list the parent lives in.
+  let parentId: string | undefined;
+  let parentProjectId: string | undefined;
+  if (flags.parent !== undefined) {
+    const parent = await adapter.getTask(flags.parent);
+    if (!parent) {
+      throw new AdapterError(
+        'NOT_FOUND',
+        `--parent ${flags.parent}: parent task not found.`,
+      );
+    }
+    parentId = parent.id;
+    parentProjectId = parent.projectId;
+  }
+
+  let projectId: string | undefined;
+  if (flags.project !== undefined) {
+    projectId = await resolveProjectId(adapter, flags.project);
+  } else if (parentProjectId !== undefined) {
+    projectId = parentProjectId;
+  }
 
   const assignee = flags.assignee !== undefined ? resolveUser(flags.assignee) : undefined;
 
@@ -149,6 +241,7 @@ export async function create(argv: readonly string[], opts: GlobalOpts): Promise
     ...(flags.assignee !== undefined && { assignee }),
     ...(columnId !== undefined && { columnId }),
     ...(reminders !== undefined && { reminders }),
+    ...(parentId !== undefined && { parentId }),
   };
 
   const task = await adapter.createTask(draft);
@@ -158,7 +251,11 @@ export async function create(argv: readonly string[], opts: GlobalOpts): Promise
       task.reminders.length > 0
         ? ` (reminders: ${task.reminders.map(formatTriggerOffset).join(', ')})`
         : '';
-    writeHuman(`Created task ${task.id}: ${task.title}${remindSuffix}`);
+    if (parentId !== undefined) {
+      writeHuman(`Created subtask ${task.id} under ${parentId}: ${task.title}${remindSuffix}`);
+    } else {
+      writeHuman(`Created task ${task.id}: ${task.title}${remindSuffix}`);
+    }
     return;
   }
   writeOk({ task });
@@ -273,15 +370,36 @@ export async function remove(argv: readonly string[], opts: GlobalOpts): Promise
   const { flags } = parseCommandArgs(argv);
   const id = requireFlag(flags, 'id', 'task id');
   const adapter = createAdapter();
+
+  // Look up children before delete so we can warn the caller — TickTick
+  // ORPHANS children (does NOT cascade-delete). The children remain with
+  // their parentId pointing at the now-deleted parent id, which the
+  // TickTick UI typically renders as top-level. Surfacing this lets the
+  // agent decide whether to follow up with promote/cascade-delete.
+  const orphanedChildren = await adapter.listSubtasks(id);
+
   const projectId = await resolveTaskProjectId(adapter, id, flags.project);
 
   await adapter.deleteTask(id, projectId);
 
   if (opts.human) {
-    writeHuman(`Deleted task ${id}`);
+    if (orphanedChildren.length > 0) {
+      writeHuman(
+        `Deleted task ${id}. Note: ${orphanedChildren.length} child task(s) were orphaned (not cascade-deleted) — they still exist with their parentId pointing at the deleted parent.`,
+      );
+    } else {
+      writeHuman(`Deleted task ${id}`);
+    }
     return;
   }
-  writeOk({ deleted: id });
+  writeOk({
+    deleted: id,
+    ...(orphanedChildren.length > 0 && {
+      orphanedChildren: orphanedChildren.map((c) => c.id),
+      orphanNote:
+        'TickTick does not cascade-delete nested subtasks. The listed children still exist with parentId pointing at the deleted parent. Promote or delete them explicitly if you want them gone.',
+    }),
+  });
 }
 
 // ──────────────────────────────────────────────────────────────────
@@ -400,6 +518,53 @@ export async function remindClear(argv: readonly string[], opts: GlobalOpts): Pr
     return;
   }
   writeOk({ task, previousReminders });
+}
+
+// ──────────────────────────────────────────────────────────────────
+// indent — re-parent an existing task under a different parent
+// ──────────────────────────────────────────────────────────────────
+
+export async function indent(argv: readonly string[], opts: GlobalOpts): Promise<void> {
+  const { flags } = parseCommandArgs(argv);
+  const id = requireFlag(flags, 'id', 'task id to indent');
+  const under = requireFlag(flags, 'under', 'new parent task id');
+
+  if (id === under) {
+    throw new UsageError(
+      `--id and --under cannot be the same task (${id}). A task cannot be its own parent.`,
+    );
+  }
+
+  const adapter = createAdapter();
+  const projectId = await resolveTaskProjectId(adapter, id, flags.project);
+
+  await adapter.indentTask(id, projectId, under);
+
+  if (opts.human) {
+    writeHuman(`Indented ${id} under ${under}`);
+    return;
+  }
+  writeOk({ taskId: id, parentId: under });
+}
+
+// ──────────────────────────────────────────────────────────────────
+// promote — clear a task's parentId, making it top-level
+// ──────────────────────────────────────────────────────────────────
+
+export async function promote(argv: readonly string[], opts: GlobalOpts): Promise<void> {
+  const { flags } = parseCommandArgs(argv);
+  const id = requireFlag(flags, 'id', 'task id to promote');
+
+  const adapter = createAdapter();
+  const projectId = await resolveTaskProjectId(adapter, id, flags.project);
+
+  await adapter.promoteTask(id, projectId);
+
+  if (opts.human) {
+    writeHuman(`Promoted ${id} to top-level`);
+    return;
+  }
+  writeOk({ taskId: id, parentId: null });
 }
 
 // ──────────────────────────────────────────────────────────────────

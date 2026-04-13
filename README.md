@@ -15,10 +15,13 @@ Uses the **unofficial v2 TickTick API** (the same one the ticktick.com web app u
 | Tasks — recurring end date (`--repeat-end <ISO>`) | ✅ |
 | Tasks — completed-task listing (paginated iterator OR statistics range) | ✅ |
 | Tasks — filter by project, status, due window, tag, section, assignee, limit | ✅ |
+| Tasks — filter by `--parent <id>` and `--top-level` | ✅ |
 | Tasks — smart-list filters (`today` / `tomorrow` / `overdue` / `week` / `next7days` / `none` / `--pinned`) | ✅ |
 | Tasks — `--section` (kanban column) on create and update | ✅ |
 | Tasks — `--assignee` (shared-list assignment) on create and update | ✅ |
 | Tasks — time-based reminders (multi, RFC-5545 TRIGGER) | ✅ *(REPLACE on `tasks update --remind`, APPEND via `tasks remind add`)* |
+| **Nested subtasks** — create with `--parent`, indent, promote, list children | ✅ |
+| Nested subtasks — recursive tree view (`tasks list --parent X --tree`) | ✅ |
 | Projects (lists) — list / get / create / update / delete | ✅ *(delete requires `--confirm`)* |
 | Tags — list / create | ✅ |
 | Tags — update / rename / merge / delete | ⚠️ *(CLI returns ok but tags write-module is broken upstream — see Known quirks)* |
@@ -30,11 +33,15 @@ Uses the **unofficial v2 TickTick API** (the same one the ticktick.com web app u
 
 ## Honest limits
 
-**Nested subtasks are NOT supported.** TickTick has two features both called "subtasks":
-1. **Checklist items** inside a task — lightweight, stored in `task.items[]`. ✅ Supported here.
-2. **True nested subtasks** — indented child tasks with their own due dates, priorities, and tags, linked via `parentId`. ❌ NOT supported — the underlying `ticktick-client` library doesn't expose `parentId`-based nesting.
+**TickTick has TWO unrelated "subtask" concepts. Both are supported, but they're different things:**
+1. **Checklist items** inside a task — lightweight bullets stored in `task.items[]`. Use `checklist add/complete/delete`. No own due date, priority, or tags.
+2. **Nested subtasks** — real child tasks linked via `parentId`, with their own due dates, priorities, tags, status, and the ability to have their OWN children. Use `tasks create --parent <id>` to create one, `tasks indent`/`tasks promote` to re-parent existing tasks, and `tasks list --parent <id>` (or `--tree`) to list them. Implementation goes through the `/api/v2/batch/taskParent` endpoint discovered by direct probing — bypasses the `ticktick-client` library's typed surface via the adapter's escape hatch.
 
-This is the largest intentional gap remaining. It's tracked as a follow-up — see `FOLLOWUPS.md` in this directory. The work required is reverse-engineering TickTick's v2 subtask endpoints via browser DevTools / Playwright traffic capture (the same technique `jaeyeonling` used for the rest of the library) and either patching upstream or forking.
+**Important nesting caveats:**
+- **Parent delete ORPHANS children.** TickTick does not cascade-delete subtasks. The delete response surfaces a `orphanedChildren` list and a note explaining what happened. Use `tasks promote` first if you want to keep the children, or delete them explicitly.
+- **`tasks update` preserves parentId across updates.** The adapter re-fetches the existing task before issuing the update so changing a child's title doesn't accidentally promote it. To re-parent, use `tasks indent`/`tasks promote` — never `tasks update`.
+- **Cross-project nesting works** but is unusual. The CLI auto-resolves the child's project from the parent on create.
+- **`tasks move` (cross-project) loses the parent relationship** because moves are copy+delete and the new task is created without `parentId`. Promote-then-move-then-indent if you really need to relocate a child to a different project under a different parent.
 
 **Other intentional gaps in v1.3:**
 
@@ -142,6 +149,7 @@ You don't invoke the CLI directly. Just ask naturally — "add 'X' to my inbox,"
 
 The skill's workflows are in `Workflows/` (v1.3):
 - Task verbs: `ListTasks.md`, `CreateTask.md`, `CompleteTask.md`, `DeleteTask.md`, `MoveTask.md`, `PinTask.md`, `UnpinTask.md`
+- Nested subtask verbs: `CreateNestedTask.md`, `IndentTask.md`, `PromoteTask.md`, `ListSubtasks.md`
 - Bulk verbs: `BulkComplete.md`, `BulkDelete.md`, `ListCompletedTasks.md`
 - Project verbs: `ListProjects.md`, `CreateProject.md`, `UpdateProject.md`, `DeleteProject.md`
 - Tag verbs: `CreateTag.md`, `DeleteTag.md`, `RenameTag.md`, `MergeTags.md`

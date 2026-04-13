@@ -1,6 +1,6 @@
 ---
 name: TickTick
-description: TickTick task and list management — create, list, update, complete, delete, move, pin, and bulk-edit tasks; recurring end dates, smart-list filters, and time-based reminders; manage checklist items; create, update, rename, merge, delete tags; create, update, delete projects (lists); shared-list members and sections. USE WHEN ticktick, add task, create task, new task, my tasks, todos, to-do, inbox, mark done, complete task, finished task, delete task, move task, pin task, unpin, bulk complete, bulk delete, what did I finish, completed tasks, create tag, delete tag, rename tag, merge tags, create list, new project, delete list, rename list, my lists, my projects, what's due, checklist, subtask, reminder, remind me, alarm, alert before, ping me before, login to ticktick, ticktick session.
+description: TickTick task and list management — create, list, update, complete, delete, move, pin, and bulk-edit tasks; nested subtasks via parentId (create child, indent, promote, tree view); recurring end dates, smart-list filters, and time-based reminders; manage checklist items; create, update, rename, merge, delete tags; create, update, delete projects (lists); shared-list members and sections. USE WHEN ticktick, add task, create task, new task, my tasks, todos, to-do, inbox, mark done, complete task, finished task, delete task, move task, pin task, unpin, bulk complete, bulk delete, what did I finish, completed tasks, create tag, delete tag, rename tag, merge tags, create list, new project, delete list, rename list, my lists, my projects, what's due, checklist, subtask, parent task, child task, subtask hierarchy, indent task, promote task, nested subtask, reminder, remind me, alarm, alert before, ping me before, login to ticktick, ticktick session.
 ---
 
 ## ⚠️ MANDATORY TRIGGER
@@ -11,6 +11,10 @@ description: TickTick task and list management — create, list, update, complet
 |---|---|
 | "what's in my inbox / what's due / what's on my list" | → `Workflows/ListTasks.md` |
 | "add task X / create a task / remind me to X / put X on my todo" | → `Workflows/CreateTask.md` |
+| "create a subtask under X / add a child task to X / add a step to X" | → `Workflows/CreateNestedTask.md` |
+| "make X a subtask of Y / indent X under Y / nest X under Y" | → `Workflows/IndentTask.md` |
+| "promote X / unnest X / make X top-level" | → `Workflows/PromoteTask.md` |
+| "show me subtasks of X / list children of X / what's nested under X" | → `Workflows/ListSubtasks.md` |
 | "mark X done / I finished X / complete X" | → `Workflows/CompleteTask.md` |
 | "delete task X / remove task X" | → `Workflows/DeleteTask.md` |
 | "move task X to list Y" | → `Workflows/MoveTask.md` |
@@ -66,10 +70,11 @@ If a `PREFERENCES.md` file exists there, load and apply it. Typical overrides: d
 
 **Supported in v1.3:**
 - ✅ Tasks: list (with filters), get, create, update, complete, delete, move between lists
+- ✅ **Nested subtasks**: create with `--parent`, indent / promote, list children, recursive `--tree` view, `--top-level` filter
 - ✅ Tasks: pin / unpin / restore (restore requires explicit id — trash listing is broken upstream)
 - ✅ Tasks: bulk create / update / delete / complete (JSON file or comma-separated id list)
 - ✅ Tasks: recurring end date (`--repeat-end <ISO>`) on create and update
-- ✅ Tasks: smart-list filters — `--due today|tomorrow|overdue|week|next7days|none`, `--pinned`, `--section`, `--assignee`
+- ✅ Tasks: smart-list filters — `--due today|tomorrow|overdue|week|next7days|none`, `--pinned`, `--section`, `--assignee`, `--parent`, `--top-level`
 - ✅ Tasks: completed-task listing — paginated iterator mode OR closed date-range mode
 - ✅ Tasks: `--section` / `--assignee` on create and update (shared lists)
 - ✅ **Time-based reminders** on tasks: set on create/update, append, remove, clear. Accepts human-friendly offsets (`15m`, `1h`, `1d`, `1d9h`, `at-start`) or raw TRIGGER strings. Multiple reminders per task supported. REPLACE semantics on `tasks update --remind`; APPEND on `tasks remind add`.
@@ -82,7 +87,7 @@ If a `PREFERENCES.md` file exists there, load and apply it. Typical overrides: d
 - ✅ Both JSON (default) and `--human` table output modes
 
 **Known limitations — NOT in v1.3:**
-- ❌ **Nested subtasks** — TickTick has two "subtask" concepts: checklist items (supported here) and true nested child tasks with their own due dates, priorities, and tags (NOT supported). The underlying `ticktick-client` library does not expose `parentId`-based nesting. Tracked as a follow-up requiring reverse-engineering of TickTick v2 endpoints. See `README.md`.
+- ⚠️ **Parent delete orphans children.** TickTick does not cascade-delete nested subtasks. Deleting a parent leaves its children in place with their parentId still pointing at the deleted parent. The CLI surfaces this in the delete response so the agent can decide whether to follow up.
 - ❌ Location-based reminders (time-based reminders ARE supported — see capabilities above)
 - ❌ Focus sessions, habits, calendar, countdowns
 - ❌ 2FA / MFA accounts (library does not support the 2FA login flow)
