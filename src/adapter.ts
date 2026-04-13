@@ -8,6 +8,36 @@
  *
  * Normalized types (Task, Project, Tag, ChecklistItem) insulate callers
  * from upstream field renames.
+ *
+ * ────── Nested subtasks (parentId) — naming and approach ──────
+ *
+ * TickTick has TWO unrelated "subtask" concepts:
+ *   1. CHECKLIST ITEMS — lightweight bullets stored in `task.items[]`. The
+ *      library exposes these via `client.tasks.createSubtask()` (misleading
+ *      name — it patches `items[]`). The adapter wraps them with
+ *      `addChecklistItem`/`completeChecklistItem`/`deleteChecklistItem`.
+ *   2. NESTED SUBTASKS — real child tasks with their own due dates,
+ *      priorities, tags, etc., linked to a parent via `task.parentId`.
+ *      The library does NOT expose these at all.
+ *
+ * To avoid name collisions and confusion, the adapter:
+ *   - Does NOT add a `createSubtaskTask()` method. Instead, `createTask()`
+ *     accepts an optional `draft.parentId`. If set, the resulting task is
+ *     a child of that parent. This is the only API path TickTick supports
+ *     for creating a child — POST /api/v2/task with parentId in the body.
+ *   - Adds three dedicated methods for the existing-task lifecycle:
+ *       indentTask(taskId, projectId, newParentId)
+ *       promoteTask(taskId, projectId)
+ *       listSubtasks(parentTaskId)
+ *   - Routes indent/promote/re-parent through POST /api/v2/batch/taskParent
+ *     with body `[{taskId, parentId, projectId}]` (parentId: null = promote).
+ *     This is the ONLY endpoint that mutates parentId on an existing task —
+ *     POST /api/v2/task/{id} silently no-ops parentId changes.
+ *   - Does NOT touch the library's `createSubtask()` method or the
+ *     `addChecklistItem` adapter wrapper.
+ *
+ * Discovery notes for the parentId endpoints live in
+ * scripts/probe-nested-subtasks*.ts (5 round-trip probes against live API).
  */
 
 import {
@@ -89,6 +119,24 @@ export type Task = {
    * a raw cast. Null when the task is unsectioned.
    */
   readonly columnId: string | null;
+  /**
+   * Nested-subtask parent id. Null/undefined for top-level tasks. The
+   * library's TickTickTask type strips this field; we recover it via a
+   * raw cast. To create a child task pass `parentId` in the create draft;
+   * to re-parent or unparent an existing task use `indentTask()` or
+   * `promoteTask()` (PATCH-style updates do NOT mutate parentId — see
+   * the adapter header comment).
+   */
+  readonly parentId: string | null;
+  /**
+   * Child task ids when this task is a parent. Hydration mirror of the
+   * `childIds[]` array on the raw API response. Often empty/null on
+   * freshly-created relationships due to server-side eventual consistency
+   * — the AUTHORITATIVE field for tree reconstruction is `child.parentId`,
+   * not `parent.childIds`. Use `listSubtasks(parentId)` to get a clean
+   * list of children regardless of mirror state.
+   */
+  readonly childIds: readonly string[];
 };
 
 export type Project = {
@@ -153,6 +201,15 @@ export type TaskDraft = {
   readonly assignee?: number | null;
   /** Section / kanban column id within the parent project. */
   readonly columnId?: string | null;
+  /**
+   * Optional parent task id. When set, the created task becomes a child
+   * (nested subtask) of the given parent. Project is inferred from the
+   * parent if `projectId` is omitted, but callers should still pass
+   * `projectId` explicitly — the resolution is the caller's job, not the
+   * adapter's. Do NOT use this on `updateTask` — PATCH-style updates do
+   * not mutate parentId; use `indentTask()` / `promoteTask()` instead.
+   */
+  readonly parentId?: string | null;
 };
 
 export type TaskPatch = TaskDraft & {
@@ -166,6 +223,17 @@ export type TaskListFilters = {
   readonly tag?: string;
   readonly due?: 'today' | 'overdue' | 'week';
   readonly limit?: number;
+  /**
+   * If set, only return tasks whose `parentId` matches this value. Useful
+   * for listing the direct children of a parent task. Mutually exclusive
+   * with `topLevelOnly`.
+   */
+  readonly parentId?: string;
+  /**
+   * If true, only return tasks with no parent (top-level tasks). Mutually
+   * exclusive with `parentId`.
+   */
+  readonly topLevelOnly?: boolean;
 };
 
 export type MoveResult = {
@@ -230,9 +298,32 @@ export interface TickTickAdapter {
   // client-side.
   listSections(projectId: string): Promise<readonly Section[]>;
 
+  // Nested subtasks (parentId-based child tasks). Distinct from checklist
+  // items — see the adapter's header comment for the full naming policy.
+  /**
+   * Re-parent an existing task to a new parent (indent gesture). Hits
+   * POST /api/v2/batch/taskParent which is the only endpoint that mutates
+   * parentId on an existing task.
+   */
+  indentTask(taskId: string, projectId: string, newParentId: string): Promise<void>;
+  /**
+   * Promote an existing child task to top-level (clear its parentId).
+   * Same endpoint as indentTask but with parentId: null.
+   */
+  promoteTask(taskId: string, projectId: string): Promise<void>;
+  /**
+   * List the direct children of a parent task. Implementation: full task
+   * list filtered client-side by `task.parentId === parentTaskId`. The raw
+   * `parent.childIds[]` mirror is unreliable on freshly-created
+   * relationships (server-side eventual consistency), so we never depend
+   * on it.
+   */
+  listSubtasks(parentTaskId: string): Promise<readonly Task[]>;
+
   // Checklist items (v1: what jaeyeonling/ticktick-client supports).
-  // NOTE: Nested subtasks (parentId-based child tasks) are NOT yet supported.
-  // Tracked as follow-up — see README.
+  // These are the lightweight `task.items[]` bullets, NOT nested subtasks.
+  // For true nested subtasks (parentId-based) see indentTask/promoteTask
+  // above and the `parentId` field on the Task and TaskDraft types.
   listChecklistItems(taskId: string): Promise<readonly ChecklistItem[]>;
   addChecklistItem(taskId: string, projectId: string, draft: ChecklistItemDraft): Promise<Task>;
   completeChecklistItem(taskId: string, projectId: string, itemId: string): Promise<Task>;
@@ -309,6 +400,20 @@ export class TickTickClientAdapter implements TickTickAdapter {
       tasks = tasks.filter((t) => matchesDueFilter(t, filters.due!));
     }
 
+    if (filters?.parentId !== undefined && filters.topLevelOnly === true) {
+      throw new AdapterError(
+        'VALIDATION',
+        'listTasks: parentId and topLevelOnly are mutually exclusive — pass one or the other, not both.',
+      );
+    }
+
+    if (filters?.parentId !== undefined) {
+      const pid = filters.parentId;
+      tasks = tasks.filter((t) => t.parentId === pid);
+    } else if (filters?.topLevelOnly === true) {
+      tasks = tasks.filter((t) => t.parentId === null);
+    }
+
     if (filters?.limit !== undefined && filters.limit >= 0) {
       tasks = tasks.slice(0, filters.limit);
     }
@@ -339,14 +444,37 @@ export class TickTickClientAdapter implements TickTickAdapter {
       ...(draft.repeatFlag !== undefined && { repeatFlag: draft.repeatFlag }),
       ...(draft.assignee !== undefined && { assignee: draft.assignee }),
       ...(draft.columnId !== undefined && { columnId: draft.columnId }),
+      // parentId is only persisted at CREATE time. Server silently no-ops
+      // parentId mutations sent via PATCH (POST /api/v2/task/{id}). To
+      // re-parent an existing task use indentTask()/promoteTask().
+      ...(draft.parentId !== undefined && { parentId: draft.parentId }),
     };
     // Cast through unknown because the library's TickTickTaskDraft type
-    // doesn't include assignee/columnId — we're intentionally bypassing.
+    // doesn't include assignee/columnId/parentId — we're intentionally
+    // bypassing the typed surface and forwarding the extra fields verbatim
+    // to POST /api/v2/task, which accepts and persists them.
     const created = await this.#client.tasks.create(rawDraft as unknown as TickTickTaskDraft);
     return normalizeTask(created);
   }
 
   async updateTask(patch: TaskPatch): Promise<Task> {
+    // The library's tasks.update() is REPLACE semantics for every field it
+    // forwards — fields not in the body get cleared by the server. To
+    // preserve parentId across an update (so updating a child task's title
+    // doesn't accidentally orphan it), we look up the existing task and
+    // forward its current parentId verbatim unless the caller explicitly
+    // changed it. Note: the public TaskDraft type intentionally does NOT
+    // expose parentId on update — re-parenting goes through indentTask /
+    // promoteTask. This re-fetch is purely defensive.
+    let existingParentId: string | null = null;
+    try {
+      const existing = await this.getTask(patch.id);
+      if (existing) existingParentId = existing.parentId;
+    } catch {
+      // If the lookup fails (e.g. task list call errors), fall through —
+      // the update still goes through with whatever fields the caller set.
+    }
+
     const rawPatch = {
       id: patch.id,
       projectId: patch.projectId,
@@ -360,6 +488,9 @@ export class TickTickClientAdapter implements TickTickAdapter {
       ...(patch.repeatFlag !== undefined && { repeatFlag: patch.repeatFlag }),
       ...(patch.assignee !== undefined && { assignee: patch.assignee }),
       ...(patch.columnId !== undefined && { columnId: patch.columnId }),
+      // Preserve parentId across update so callers that just want to
+      // change a child's title don't accidentally promote it.
+      ...(existingParentId !== null && { parentId: existingParentId }),
     };
     const updated = await this.#client.tasks.update(rawPatch as unknown as TickTickTaskUpdate);
     return normalizeTask(updated);
@@ -380,6 +511,103 @@ export class TickTickClientAdapter implements TickTickAdapter {
   ): Promise<MoveResult> {
     const result = await this.#client.tasks.move({ taskId, fromProjectId, toProjectId });
     return { task: normalizeTask(result.task), previousId: result.previousId };
+  }
+
+  // ── Nested subtasks (parentId) ──
+
+  async indentTask(
+    taskId: string,
+    projectId: string,
+    newParentId: string,
+  ): Promise<void> {
+    if (taskId === newParentId) {
+      throw new AdapterError(
+        'VALIDATION',
+        `indentTask: cannot make a task its own parent (taskId === newParentId === ${taskId})`,
+      );
+    }
+    // The server silently accepts non-existent parentIds (200 with id2error
+    // {<bogus>: "NOT_EXISTED"} but still mutates the child to point at the
+    // bogus id). Verify the parent exists client-side before issuing the
+    // mutation.
+    const all = await this.#client.tasks.list();
+    const parent = all.find((t) => t.id === newParentId);
+    if (!parent) {
+      throw new AdapterError(
+        'NOT_FOUND',
+        `indentTask: parent task ${newParentId} not found. Cannot reparent ${taskId}.`,
+      );
+    }
+    const child = all.find((t) => t.id === taskId);
+    if (!child) {
+      throw new AdapterError(
+        'NOT_FOUND',
+        `indentTask: task ${taskId} not found.`,
+      );
+    }
+    await this.#mutateParent(taskId, projectId, newParentId);
+  }
+
+  async promoteTask(taskId: string, projectId: string): Promise<void> {
+    const all = await this.#client.tasks.list();
+    const child = all.find((t) => t.id === taskId);
+    if (!child) {
+      throw new AdapterError('NOT_FOUND', `promoteTask: task ${taskId} not found.`);
+    }
+    await this.#mutateParent(taskId, projectId, null);
+  }
+
+  async listSubtasks(parentTaskId: string): Promise<readonly Task[]> {
+    // Reuse listTasks with status='all' so we surface child tasks regardless
+    // of completion state — callers that only want open children can chain
+    // their own .filter().
+    return this.listTasks({ parentId: parentTaskId, status: 'all' });
+  }
+
+  /**
+   * Internal: hits POST /api/v2/batch/taskParent. The ONLY endpoint the
+   * TickTick v2 API exposes for mutating parentId on an existing task.
+   *
+   * Body shape (verified against live API, April 2026):
+   *   [{taskId, parentId, projectId}]    ← bare array, not wrapped
+   *
+   * Notes:
+   *   - `parentId: null` clears the parent (promote).
+   *   - `projectId` MUST be the CHILD's project. Passing the parent's
+   *     project for a cross-project relationship yields `id2error:
+   *     {<childId>: "EXISTED"}` and the mutation is rejected.
+   *   - The response shape is `{id2etag, id2error}`. We surface
+   *     `id2error` as a thrown AdapterError so callers know about
+   *     `NOT_EXISTED` parents that the server otherwise silently
+   *     accepts. We pre-verify in indentTask, so this is defence in
+   *     depth.
+   */
+  async #mutateParent(
+    taskId: string,
+    projectId: string,
+    parentId: string | null,
+  ): Promise<void> {
+    const client = this.#client as unknown as {
+      request: <T>(method: string, path: string, body?: unknown) => Promise<T>;
+    };
+    type ParentResponse = {
+      readonly id2etag?: Readonly<Record<string, unknown>>;
+      readonly id2error?: Readonly<Record<string, string>>;
+    };
+    const response = await client.request<ParentResponse>(
+      'POST',
+      '/api/v2/batch/taskParent',
+      [{ taskId, parentId, projectId }],
+    );
+    const errors = response.id2error ?? {};
+    const errorIds = Object.keys(errors);
+    if (errorIds.length > 0) {
+      const detail = errorIds.map((k) => `${k}: ${errors[k]}`).join('; ');
+      throw new AdapterError(
+        'VALIDATION',
+        `taskParent endpoint returned errors: ${detail}`,
+      );
+    }
   }
 
   // ── Projects ──
@@ -579,7 +807,18 @@ function normalizeTask(raw: TickTickTask): Task {
     assignee?: number | null;
     creator?: number | null;
     columnId?: string | null;
+    parentId?: string | null;
+    childIds?: readonly string[] | null;
   };
+  // parentId comes back as either a string, null, or missing depending on
+  // whether the task is a child. We normalize all three to either a
+  // non-empty string or null.
+  const rawParentId =
+    typeof r.parentId === 'string' && r.parentId.length > 0 ? r.parentId : null;
+  // childIds is a hydration mirror — often missing on freshly-created
+  // relationships. We normalize missing/null to an empty array so callers
+  // can iterate without checking.
+  const rawChildIds = Array.isArray(r.childIds) ? r.childIds : [];
   return {
     id: r.id,
     projectId: r.projectId,
@@ -598,6 +837,8 @@ function normalizeTask(raw: TickTickTask): Task {
     assignee: typeof r.assignee === 'number' ? r.assignee : null,
     creator: typeof r.creator === 'number' ? r.creator : null,
     columnId: r.columnId ?? null,
+    parentId: rawParentId,
+    childIds: rawChildIds,
   };
 }
 

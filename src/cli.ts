@@ -131,6 +131,10 @@ async function routeTasks(argv: readonly string[], opts: GlobalOpts): Promise<vo
       return tasks.remove(rest, opts);
     case 'move':
       return tasks.move(rest, opts);
+    case 'indent':
+      return tasks.indent(rest, opts);
+    case 'promote':
+      return tasks.promote(rest, opts);
     default:
       throw new UsageError(`Unknown tasks subcommand: ${sub}`);
   }
@@ -317,20 +321,36 @@ COMMANDS
     --due today|overdue|week                 filter by due window
     --tag <name>                             filter by tag
     --limit N                                cap result count
+    --parent <taskId>                        only direct children of <taskId>
+    --top-level                              only tasks with no parent
+    --tree                                   recursive tree (requires --parent)
   tasks get --id <taskId>                  Fetch a single task
   tasks create --title <t> [flags]         Create a task
     --project <id|name> --content <md>
     --due <ISO> --priority none|low|medium|high
     --tags a,b,c --section <id|name> --assignee me|<id>|<name>
+    --parent <taskId>                        create as a child of <taskId>
+                                             (project auto-resolved from parent)
   tasks update --id <id> --project <pid> [flags]
-                                           Update a task (same optional fields)
+                                           Update a task (same optional fields).
+                                           Note: --parent is NOT accepted on update;
+                                           use 'tasks indent' / 'tasks promote'.
   tasks complete --id <id> [--project <pid>]
                                            Mark a task done
   tasks delete --id <id> [--project <pid>]
-                                           Delete (abandon) a task
+                                           Delete (abandon) a task. Children are
+                                           ORPHANED (not cascade-deleted) — they
+                                           remain with their parentId pointing at
+                                           the deleted parent.
   tasks move --id <id> --to <id|name> [--from <pid>]
                                            Move to a different list.
                                            ⚠️ returns a NEW task id (copy+delete)
+  tasks indent --id <id> --under <parentId> [--project <pid>]
+                                           Make <id> a nested subtask of <parentId>.
+                                           In-place (id is preserved).
+  tasks promote --id <id> [--project <pid>]
+                                           Make <id> top-level (clear its parent).
+                                           In-place (id is preserved).
 
   projects list                            List all projects
   projects get --id <id|name>              Fetch one project
@@ -365,8 +385,10 @@ ENVIRONMENT
   TICKTICK_DEBUG=1    forces --debug
 
 NOTES
-  - Nested subtasks (parentId-based child tasks) are NOT yet supported.
-    See README.md for the follow-up work required.
+  - Nested subtasks: use --parent on create, or 'tasks indent' / 'tasks promote'
+    to re-parent existing tasks. Distinct from checklist items (use 'checklist').
+  - Parent-delete ORPHANS children. They remain with parentId pointing at the
+    deleted parent. Promote or delete them explicitly if needed.
   - 2FA / MFA on your account is NOT supported.
 `;
 }

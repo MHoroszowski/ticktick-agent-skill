@@ -129,6 +129,47 @@ export function formatProjectsTable(projects: readonly Project[]): string {
   return `${header}\n${divider}\n${body}`;
 }
 
+/**
+ * Recursive indented tree print for `tasks list --parent <id> --tree`. Each
+ * level gets two spaces of indent plus a bullet glyph. Status, priority, and
+ * id are shown inline so the agent can chain follow-up commands without
+ * losing context.
+ */
+export function formatTaskTree(
+  nodes: ReadonlyArray<{
+    readonly task: Task;
+    readonly children: readonly { readonly task: Task; readonly children: readonly unknown[] }[];
+  }>,
+  depth = 0,
+): string {
+  if (nodes.length === 0) {
+    return depth === 0 ? '(no children)' : '';
+  }
+  const lines: string[] = [];
+  for (const node of nodes) {
+    const indent = '  '.repeat(depth);
+    const glyph = node.task.status === 'completed' ? '[x]' : '[ ]';
+    const pri = priorityGlyph(node.task.priority).trim();
+    const priPart = pri ? ` ${pri}` : '';
+    const due = formatDue(node.task.dueDate);
+    const duePart = due ? ` (due ${due})` : '';
+    const idPart = ` [${shortenId(node.task.id)}]`;
+    lines.push(`${indent}${glyph}${priPart} ${node.task.title}${duePart}${idPart}`);
+    if (node.children.length > 0) {
+      lines.push(
+        formatTaskTree(
+          node.children as ReadonlyArray<{
+            task: Task;
+            children: readonly { task: Task; children: readonly unknown[] }[];
+          }>,
+          depth + 1,
+        ),
+      );
+    }
+  }
+  return lines.filter((l) => l.length > 0).join('\n');
+}
+
 export function formatChecklistItems(items: readonly ChecklistItem[]): string {
   if (items.length === 0) return '(no checklist items)';
   return items

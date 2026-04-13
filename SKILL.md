@@ -11,6 +11,10 @@ description: TickTick task and list management — create, list, update, complet
 |---|---|
 | "what's in my inbox / what's due / what's on my list" | → `Workflows/ListTasks.md` |
 | "add task X / create a task / remind me to X / put X on my todo" | → `Workflows/CreateTask.md` |
+| "create a subtask under X / add a child task to X / add a step to X" | → `Workflows/CreateNestedTask.md` |
+| "make X a subtask of Y / indent X under Y / nest X under Y" | → `Workflows/IndentTask.md` |
+| "promote X / unnest X / make X top-level" | → `Workflows/PromoteTask.md` |
+| "show me subtasks of X / list children of X / what's nested under X" | → `Workflows/ListSubtasks.md` |
 | "mark X done / I finished X / complete X" | → `Workflows/CompleteTask.md` |
 | "delete task X / remove task X" | → `Workflows/DeleteTask.md` |
 | "move task X to list Y" | → `Workflows/MoveTask.md` |
@@ -45,16 +49,20 @@ If a `PREFERENCES.md` file exists there, load and apply it. Typical overrides: d
 
 ## Capabilities — Honest
 
-**Supported in v1:**
+**Supported:**
 - ✅ Tasks: list (with filters), get, create, update, complete, delete, move between lists
+- ✅ **Nested subtasks**: create with `--parent`, indent / promote, list children, recursive tree view
 - ✅ Projects (lists): list, get
 - ✅ Tags: list
-- ✅ **Checklist items** inside a task: list, add, complete, delete
+- ✅ Sections (kanban columns): list per project, filter / target tasks by section
+- ✅ Shared-project members: list, remove
+- ✅ Task assignment: create / update with `--assignee me|unassign|<id>|<name>`
+- ✅ **Checklist items** inside a task (lightweight bullets in `task.items[]`): list, add, complete, delete
 - ✅ Automatic session refresh (silent re-login on 401/auth-expired)
 - ✅ Both JSON (default) and `--human` table output modes
 
-**Known limitations — NOT in v1:**
-- ❌ **Nested subtasks** — TickTick has two "subtask" concepts: checklist items (supported here) and true nested child tasks with their own due dates, priorities, and tags (NOT supported). The underlying `ticktick-client` library does not expose `parentId`-based nesting. Tracked as a follow-up requiring reverse-engineering of TickTick v2 endpoints. See `README.md`.
+**Known limitations:**
+- ⚠️ **Parent delete orphans children.** TickTick does not cascade-delete nested subtasks. Deleting a parent leaves its children in place with their parentId still pointing at the deleted parent. The CLI surfaces this in the delete response so the agent can decide whether to follow up.
 - ❌ Focus sessions, habits, calendar, countdowns, recurring-rule editing
 - ❌ 2FA / MFA accounts (library does not support the 2FA login flow)
 - ❌ Listing trash / restoring deleted tasks (TickTick's v2 API has a known bug here — the library documents it)
