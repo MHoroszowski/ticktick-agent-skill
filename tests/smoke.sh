@@ -770,4 +770,95 @@ ok "parent delete orphaned children (as documented)"
   || fail "cleanup child1 failed"
 ok "cleaned up nested subtask test tasks"
 
+# ──────────────────────────────────────────────────────────────────
+# Step 32: location reminders (geofences) lifecycle
+# Covers ISC-6.1 .. ISC-6.11 and ISC-6.16. Lifecycle:
+#   create → verify round-trip → update → verify update → clear →
+#   verify clear → mirror USAGE error gates → 📍 column visibility →
+#   cleanup
+# ──────────────────────────────────────────────────────────────────
+log "Step 32: location reminders lifecycle"
+
+# 32a: create with all 6 location flags
+LOC_TID=$("$TICKTICK" tasks create --title "location smoke" --project "$TEST_PROJECT" \
+  --due "$(date -u -d '+1 day' '+%Y-%m-%dT%H:%M:%S.000+0000')" \
+  --location-lat 37.7749 --location-lng -122.4194 \
+  --location-radius 100 --location-trigger arrive \
+  --location-alias "SF Test" --location-address "1 Market St, San Francisco, CA" \
+  | jq -r '.task.id')
+[ -n "$LOC_TID" ] || fail "couldn't create location smoke task"
+
+# 32a (cont): round-trip the location field via tasks get
+"$TICKTICK" tasks get --id "$LOC_TID" \
+  | jq -e '.task.location.loc.latitude == 37.7749
+           and .task.location.loc.longitude == -122.4194
+           and .task.location.radius == 100
+           and .task.location.transitionType == 1
+           and .task.location.alias == "SF Test"
+           and .task.location.address == "1 Market St, San Francisco, CA"' >/dev/null \
+  || fail "location field didn't round-trip correctly"
+ok "32a: created task with geofence, location field round-tripped"
+
+# 32b: update location (change radius and trigger)
+"$TICKTICK" tasks update --id "$LOC_TID" --project "$TEST_PROJECT" --title "location smoke" \
+  --location-lat 37.7749 --location-lng -122.4194 \
+  --location-radius 500 --location-trigger leave \
+  | jq -e '.ok == true' >/dev/null \
+  || fail "location update failed"
+"$TICKTICK" tasks get --id "$LOC_TID" \
+  | jq -e '.task.location.radius == 500
+           and .task.location.transitionType == 2' >/dev/null \
+  || fail "location update didn't persist"
+ok "32b: updated location radius and trigger (transitionType 1→2)"
+
+# 32c: clear location via dedicated subcommand
+"$TICKTICK" tasks location clear --id "$LOC_TID" --project "$TEST_PROJECT" \
+  | jq -e '.ok == true and .previousLocation != null' >/dev/null \
+  || fail "location clear failed"
+"$TICKTICK" tasks get --id "$LOC_TID" \
+  | jq -e '.task.location == null' >/dev/null \
+  || fail "location clear didn't persist"
+ok "32c: cleared location (location field is null after re-fetch)"
+
+# 32d: USAGE error — --location-lat without --location-lng
+LOC_MISSING_LNG=$("$TICKTICK" tasks create --title "bad" --project "$TEST_PROJECT" \
+  --location-lat 37.7749 2>&1 || true)
+echo "$LOC_MISSING_LNG" | jq -e '.ok == false and .error.code == "USAGE"' >/dev/null \
+  || fail "missing --location-lng should be USAGE error: $LOC_MISSING_LNG"
+ok "32d: missing --location-lng correctly rejected with USAGE"
+
+# 32d (mirror): USAGE error — --location-lng without --location-lat
+LOC_MISSING_LAT=$("$TICKTICK" tasks create --title "bad" --project "$TEST_PROJECT" \
+  --location-lng -122.4194 2>&1 || true)
+echo "$LOC_MISSING_LAT" | jq -e '.ok == false and .error.code == "USAGE"' >/dev/null \
+  || fail "missing --location-lat should be USAGE error: $LOC_MISSING_LAT"
+ok "32d-mirror: missing --location-lat correctly rejected with USAGE"
+
+# 32e: 📍 column visibility — present when at least one task has a location.
+# Re-set a location on the smoke task so the human-mode list output has
+# something to emit the column for, then `tasks list --human` and grep.
+"$TICKTICK" tasks update --id "$LOC_TID" --project "$TEST_PROJECT" --title "location smoke" \
+  --location-lat 37.7749 --location-lng -122.4194 \
+  --location-radius 100 --location-trigger arrive \
+  --location-alias "SF" >/dev/null \
+  || fail "re-set location for column visibility test failed"
+LOC_LIST_WITH=$("$TICKTICK" tasks list --project "$TEST_PROJECT" --human 2>&1)
+echo "$LOC_LIST_WITH" | grep -q '📍' \
+  || fail "📍 column should appear in --human output when a task has a location: $LOC_LIST_WITH"
+ok "32e: 📍 column appears when at least one task has a location"
+
+# 32f: 📍 column hidden when no task has a location. Clear the location
+# from the smoke task and re-list — the column should be gone.
+"$TICKTICK" tasks location clear --id "$LOC_TID" --project "$TEST_PROJECT" >/dev/null \
+  || fail "clear-for-column-visibility test failed"
+LOC_LIST_WITHOUT=$("$TICKTICK" tasks list --project "$TEST_PROJECT" --human 2>&1)
+echo "$LOC_LIST_WITHOUT" | grep -q '📍' \
+  && fail "📍 column should be hidden in --human output when no task has a location: $LOC_LIST_WITHOUT"
+ok "32f: 📍 column hidden when no task has a location"
+
+# 32g: cleanup the smoke task
+"$TICKTICK" tasks delete --id "$LOC_TID" --project "$TEST_PROJECT" >/dev/null \
+  || fail "cleanup of location smoke task failed"
+ok "32g: cleaned up location smoke task"
+
 printf '\n\033[1;32m✓ All smoke tests passed\033[0m\n'
