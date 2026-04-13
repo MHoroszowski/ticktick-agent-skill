@@ -1,14 +1,19 @@
 /**
  * env.ts — load TICKTICK_EMAIL and TICKTICK_PASSWORD.
  *
- * Precedence:
+ * Precedence (first match wins at read time; reads cache both files):
  *   1. process.env (already set, from a parent shell or CLI wrapper)
- *   2. ~/.env (dotenv-style, KEY=VALUE, one per line)
- *   3. undefined → caller decides whether to fail
+ *   2. ~/.env — user-owned overlay (optional)
+ *   3. ~/.config/PAI/.env — PAI-managed XDG-compliant secrets file
+ *   4. undefined → caller decides whether to fail
  *
- * This skill never reads credentials from settings.json, the skill directory,
- * or anywhere other than process.env or ~/.env. If the secret ever lands in
- * a file tracked by git or a harness config, that's a bug.
+ * The XDG file is the canonical home for PAI-managed secrets; ~/.env is
+ * the user's personal file and is read as an optional overlay so users
+ * can keep ~/.env for their own purposes without PAI claiming it.
+ *
+ * This skill never reads credentials from settings.json or the skill
+ * directory itself. If a secret lands in a file tracked by git or a
+ * harness config, that's a bug.
  */
 
 import { existsSync, readFileSync } from 'node:fs';
@@ -48,17 +53,24 @@ let cachedDotenv: Record<string, string> | null = null;
 
 function readDotenv(): Record<string, string> {
   if (cachedDotenv !== null) return cachedDotenv;
-  const path = join(homedir(), '.env');
-  if (!existsSync(path)) {
-    cachedDotenv = {};
-    return cachedDotenv;
+
+  // XDG-compliant location first — PAI's managed secrets live here
+  const xdgPath = join(homedir(), '.config', 'PAI', '.env');
+  // ~/.env is a user-owned overlay; values here win over the XDG file
+  const homePath = join(homedir(), '.env');
+
+  const merged: Record<string, string> = {};
+  for (const path of [xdgPath, homePath]) {
+    if (!existsSync(path)) continue;
+    try {
+      const raw = readFileSync(path, 'utf-8');
+      Object.assign(merged, parseDotenv(raw));
+    } catch {
+      // ignore; keep whatever merged successfully so far
+    }
   }
-  try {
-    const raw = readFileSync(path, 'utf-8');
-    cachedDotenv = parseDotenv(raw);
-  } catch {
-    cachedDotenv = {};
-  }
+
+  cachedDotenv = merged;
   return cachedDotenv;
 }
 

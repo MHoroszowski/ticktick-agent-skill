@@ -19,6 +19,8 @@ import {
 } from 'ticktick-client';
 import type {
   TickTickTask,
+  TickTickTaskDraft,
+  TickTickTaskUpdate,
   TickTickProject,
   TickTickTag,
   TickTickTaskItem,
@@ -32,6 +34,20 @@ import type {
 
 export type TaskStatus = 'open' | 'completed' | 'abandoned';
 export type TaskPriorityName = 'none' | 'low' | 'medium' | 'high';
+
+/**
+ * A member of a shared project. Discovered via `GET /api/v2/project/{id}/users`.
+ * Minimal shape — the raw API returns more fields (avatarUrl, userCode, etc.)
+ * but we only surface what's useful for identification and assignment.
+ */
+export type Member = {
+  readonly userId: number;
+  readonly displayName: string | null;
+  readonly username: string | null;
+  readonly isOwner: boolean;
+  readonly permission: 'read' | 'write' | 'comment' | string;
+  readonly acceptedShare: boolean;
+};
 
 export type ChecklistItem = {
   readonly id: string;
@@ -56,6 +72,23 @@ export type Task = {
   readonly pinnedAt: string | null;
   readonly repeatFlag: string | null;
   readonly items: readonly ChecklistItem[];
+  /**
+   * Shared-project assignment. Numeric TickTick userId. Present on tasks in
+   * shared projects; null on unassigned tasks. The underlying library strips
+   * this field from its typed response — we recover it via a raw cast.
+   */
+  readonly assignee: number | null;
+  /**
+   * Numeric TickTick userId of whoever originally created the task. Read-only;
+   * surfaced for context ("who put this on the list?") in shared lists.
+   */
+  readonly creator: number | null;
+  /**
+   * Project section / kanban column. The library has `TickTickTaskItem`
+   * references but strips columnId from its typed Task; we recover it via
+   * a raw cast. Null when the task is unsectioned.
+   */
+  readonly columnId: string | null;
 };
 
 export type Project = {
@@ -73,8 +106,30 @@ export type Tag = {
   readonly parent: string | null;
 };
 
+/**
+ * A section (kanban column) within a project. Fetched via
+ * `GET /api/v2/column?from=0&projectId=X`. Note: the TickTick server-side
+ * projectId filter is currently ignored (returns all columns across all
+ * projects), so the adapter filters client-side. The underlying library's
+ * `projects.listColumns()` also wraps the response as `{update: Column[]}`
+ * instead of returning a bare array — the adapter unwraps both shapes.
+ * Upstream fix tracked in PR #35 on jaeyeonling/ticktick-client.
+ */
+export type Section = {
+  readonly id: string;
+  readonly projectId: string;
+  readonly name: string;
+  readonly sortOrder: number | null;
+};
+
 export type User = {
-  readonly userId: string | null;
+  /**
+   * Numeric TickTick userId. Comes from `/api/v2/user/status` (not
+   * `/user/profile`, which omits it). The status endpoint returns it as a
+   * string like "115368611" which we parse into a number for easy comparison
+   * with task.assignee / task.creator fields.
+   */
+  readonly userId: number | null;
   readonly username: string | null;
   readonly email: string | null;
   readonly displayName: string | null;
@@ -90,6 +145,14 @@ export type TaskDraft = {
   readonly isAllDay?: boolean;
   readonly tags?: readonly string[];
   readonly repeatFlag?: string | null;
+  /**
+   * Assign to a specific shared-project member by userId. Pass null to
+   * explicitly clear assignment. Omit to leave untouched (on update) or
+   * default to unassigned (on create).
+   */
+  readonly assignee?: number | null;
+  /** Section / kanban column id within the parent project. */
+  readonly columnId?: string | null;
 };
 
 export type TaskPatch = TaskDraft & {
@@ -139,8 +202,33 @@ export interface TickTickAdapter {
   listProjects(): Promise<readonly Project[]>;
   getProject(idOrName: string): Promise<Project | null>;
 
+  // Shared-project members. Hits the /api/v2/project/{id}/users endpoint
+  // that the jaeyeonling library doesn't yet expose. Returns self only
+  // for non-shared projects.
+  listMembers(projectId: string): Promise<readonly Member[]>;
+  /**
+   * Revoke a user's access to a shared project.
+   *
+   * Hits `DELETE /api/v2/project/{projectId}/share/{userId}` — discovered
+   * by probing in April 2026; jaeyeonling/ticktick-client doesn't expose
+   * it. The endpoint is idempotent: removing a non-member, a bogus userId,
+   * or even the project owner returns 2xx with no body. Callers that need
+   * removal-happened confirmation should diff `listMembers` before/after.
+   *
+   * Note: the server accepts a DELETE on the project owner's userId
+   * silently (no-op) rather than 400-ing. Don't rely on it to protect you
+   * from removing yourself — validate in the caller if that matters.
+   */
+  removeMember(projectId: string, userId: number): Promise<void>;
+
   // Tags
   listTags(): Promise<readonly Tag[]>;
+
+  // Sections (kanban columns) within a project. Bypasses the library's
+  // buggy listColumns() method which wraps responses and doesn't filter
+  // by projectId server-side — we hit /api/v2/column directly and filter
+  // client-side.
+  listSections(projectId: string): Promise<readonly Section[]>;
 
   // Checklist items (v1: what jaeyeonling/ticktick-client supports).
   // NOTE: Nested subtasks (parentId-based child tasks) are NOT yet supported.
@@ -188,8 +276,14 @@ export class TickTickClientAdapter implements TickTickAdapter {
   }
 
   async getUser(): Promise<User> {
-    const profile = await this.#client.user.getProfile();
-    return normalizeUser(profile);
+    // Profile has displayName/email but lacks the numeric userId.
+    // Status has the numeric userId but lacks displayName.
+    // Call both in parallel and merge.
+    const [profile, status] = await Promise.all([
+      this.#client.user.getProfile(),
+      this.#client.user.getStatus(),
+    ]);
+    return normalizeUser(profile, status);
   }
 
   // ── Tasks ──
@@ -229,7 +323,11 @@ export class TickTickClientAdapter implements TickTickAdapter {
   }
 
   async createTask(draft: TaskDraft): Promise<Task> {
-    const created = await this.#client.tasks.create({
+    // The library's TickTickTaskDraft type doesn't include `assignee` or
+    // `columnId`, but the underlying POST /api/v2/task endpoint accepts
+    // both. We add them via a cast — the library passes the body through
+    // verbatim so TickTick receives the extra fields.
+    const rawDraft = {
       title: draft.title,
       ...(draft.projectId !== undefined && { projectId: draft.projectId }),
       ...(draft.content !== undefined && { content: draft.content }),
@@ -239,12 +337,17 @@ export class TickTickClientAdapter implements TickTickAdapter {
       ...(draft.isAllDay !== undefined && { isAllDay: draft.isAllDay }),
       ...(draft.tags !== undefined && { tags: draft.tags }),
       ...(draft.repeatFlag !== undefined && { repeatFlag: draft.repeatFlag }),
-    });
+      ...(draft.assignee !== undefined && { assignee: draft.assignee }),
+      ...(draft.columnId !== undefined && { columnId: draft.columnId }),
+    };
+    // Cast through unknown because the library's TickTickTaskDraft type
+    // doesn't include assignee/columnId — we're intentionally bypassing.
+    const created = await this.#client.tasks.create(rawDraft as unknown as TickTickTaskDraft);
     return normalizeTask(created);
   }
 
   async updateTask(patch: TaskPatch): Promise<Task> {
-    const updated = await this.#client.tasks.update({
+    const rawPatch = {
       id: patch.id,
       projectId: patch.projectId,
       title: patch.title,
@@ -255,7 +358,10 @@ export class TickTickClientAdapter implements TickTickAdapter {
       ...(patch.isAllDay !== undefined && { isAllDay: patch.isAllDay }),
       ...(patch.tags !== undefined && { tags: patch.tags }),
       ...(patch.repeatFlag !== undefined && { repeatFlag: patch.repeatFlag }),
-    });
+      ...(patch.assignee !== undefined && { assignee: patch.assignee }),
+      ...(patch.columnId !== undefined && { columnId: patch.columnId }),
+    };
+    const updated = await this.#client.tasks.update(rawPatch as unknown as TickTickTaskUpdate);
     return normalizeTask(updated);
   }
 
@@ -290,10 +396,76 @@ export class TickTickClientAdapter implements TickTickAdapter {
     return projects.find((p) => p.name.toLowerCase() === lc) ?? null;
   }
 
+  // ── Members (shared projects) ──
+  async listMembers(projectId: string): Promise<readonly Member[]> {
+    // Hit /api/v2/project/{id}/users directly via the library's internal
+    // request() method. The jaeyeonling library doesn't yet expose this
+    // endpoint. Discovered April 2026 by probing candidate URL patterns.
+    const client = this.#client as unknown as {
+      request: <T>(method: string, path: string, body?: unknown) => Promise<T>;
+    };
+    const raw = await client.request<readonly RawMember[]>(
+      'GET',
+      `/api/v2/project/${projectId}/users`,
+    );
+    return raw.map(normalizeMember);
+  }
+
+  async removeMember(projectId: string, userId: number): Promise<void> {
+    // DELETE /api/v2/project/{projectId}/share/{userId}
+    //
+    // Discovered April 2026 by probing 12 candidate URL patterns against
+    // the /api/v2/project/{PID}/... namespace with a fake userId — this is
+    // the only pattern that returned 2xx instead of 404/405. Verified as a
+    // no-op (the member list is unchanged) when called with the owner's
+    // userId, a bogus userId, or a bogus projectId — the server silently
+    // accepts and returns an empty body in all idempotent cases.
+    //
+    // The library's request() helper throws TickTickApiError on non-2xx,
+    // so we just let that bubble up — mapLibraryError will turn it into a
+    // NOT_FOUND / NETWORK AdapterError downstream.
+    if (!Number.isFinite(userId) || !Number.isInteger(userId)) {
+      throw new AdapterError(
+        'VALIDATION',
+        `removeMember: userId must be a finite integer, got ${String(userId)}`,
+      );
+    }
+    const client = this.#client as unknown as {
+      request: <T>(method: string, path: string, body?: unknown) => Promise<T>;
+    };
+    await client.request<void>(
+      'DELETE',
+      `/api/v2/project/${projectId}/share/${userId}`,
+    );
+  }
+
   // ── Tags ──
   async listTags(): Promise<readonly Tag[]> {
     const tags = await this.#client.tags.list();
     return tags.map(normalizeTag);
+  }
+
+  // ── Sections (kanban columns) ──
+  async listSections(projectId: string): Promise<readonly Section[]> {
+    // The library's `client.projects.listColumns(projectId)` has two bugs:
+    //   1. Returns `{update: Column[]}` wrapped instead of a bare array.
+    //   2. Server-side `projectId` filter is ignored — returns every
+    //      column across every project.
+    // Until the upstream PR (jaeyeonling/ticktick-client#35) merges we hit
+    // `/api/v2/column` directly and filter client-side.
+    const client = this.#client as unknown as {
+      request: <T>(method: string, path: string, body?: unknown) => Promise<T>;
+    };
+    const raw = await client.request<unknown>(
+      'GET',
+      `/api/v2/column?from=0&projectId=${projectId}`,
+    );
+    const columns: readonly RawColumn[] = Array.isArray(raw)
+      ? (raw as readonly RawColumn[])
+      : ((raw as { update?: readonly unknown[] }).update as readonly RawColumn[]) ?? [];
+    return columns
+      .filter((c) => c.projectId === projectId)
+      .map(normalizeSection);
   }
 
   // ── Checklist items ──
@@ -401,21 +573,53 @@ export class TickTickClientAdapter implements TickTickAdapter {
 // ──────────────────────────────────────────────────────────────────
 
 function normalizeTask(raw: TickTickTask): Task {
+  // The library's typed TickTickTask strips several fields that exist in
+  // the raw API response. Cast to any to recover them.
+  const r = raw as TickTickTask & {
+    assignee?: number | null;
+    creator?: number | null;
+    columnId?: string | null;
+  };
   return {
-    id: raw.id,
-    projectId: raw.projectId,
-    title: raw.title,
-    status: normalizeTaskStatus(raw.status),
-    priority: normalizePriority(raw.priority ?? 0),
-    content: raw.content ?? null,
-    tags: raw.tags ?? [],
-    startDate: raw.startDate ?? null,
-    dueDate: raw.dueDate ?? null,
-    isAllDay: raw.isAllDay ?? null,
-    completedAt: raw.completedTime ?? null,
-    pinnedAt: raw.pinnedTime ?? null,
-    repeatFlag: raw.repeatFlag ?? null,
-    items: (raw.items ?? []).map(normalizeItem),
+    id: r.id,
+    projectId: r.projectId,
+    title: r.title,
+    status: normalizeTaskStatus(r.status),
+    priority: normalizePriority(r.priority ?? 0),
+    content: r.content ?? null,
+    tags: r.tags ?? [],
+    startDate: r.startDate ?? null,
+    dueDate: r.dueDate ?? null,
+    isAllDay: r.isAllDay ?? null,
+    completedAt: r.completedTime ?? null,
+    pinnedAt: r.pinnedTime ?? null,
+    repeatFlag: r.repeatFlag ?? null,
+    items: (r.items ?? []).map(normalizeItem),
+    assignee: typeof r.assignee === 'number' ? r.assignee : null,
+    creator: typeof r.creator === 'number' ? r.creator : null,
+    columnId: r.columnId ?? null,
+  };
+}
+
+// Raw shape returned by GET /api/v2/project/{id}/users. Only the fields
+// we actually use; the endpoint returns more (avatarUrl, userCode, etc).
+type RawMember = {
+  readonly userId: number;
+  readonly displayName?: string | null;
+  readonly username?: string | null;
+  readonly isOwner?: boolean;
+  readonly permission?: string;
+  readonly acceptStatus?: number;
+};
+
+function normalizeMember(raw: RawMember): Member {
+  return {
+    userId: raw.userId,
+    displayName: raw.displayName ?? null,
+    username: raw.username ?? null,
+    isOwner: raw.isOwner === true,
+    permission: raw.permission ?? 'read',
+    acceptedShare: raw.acceptStatus === 1,
   };
 }
 
@@ -439,6 +643,24 @@ function normalizeProject(raw: TickTickProject): Project {
   };
 }
 
+// Raw shape returned by GET /api/v2/column?from=0&projectId=X. Only the
+// fields we consume — the endpoint returns more (etag, deleted, type, etc).
+type RawColumn = {
+  readonly id: string;
+  readonly projectId: string;
+  readonly name: string;
+  readonly sortOrder?: number;
+};
+
+function normalizeSection(raw: RawColumn): Section {
+  return {
+    id: raw.id,
+    projectId: raw.projectId,
+    name: raw.name,
+    sortOrder: typeof raw.sortOrder === 'number' ? raw.sortOrder : null,
+  };
+}
+
 function normalizeTag(raw: TickTickTag): Tag {
   return {
     name: raw.name,
@@ -448,12 +670,22 @@ function normalizeTag(raw: TickTickTag): Tag {
   };
 }
 
-function normalizeUser(raw: TickTickUserProfile): User {
+function normalizeUser(
+  profile: TickTickUserProfile,
+  status?: { readonly userId?: string | number; readonly username?: string } | undefined,
+): User {
+  const rawUserId = status?.userId ?? profile.userId;
+  const userId =
+    typeof rawUserId === 'number'
+      ? rawUserId
+      : typeof rawUserId === 'string' && /^\d+$/.test(rawUserId)
+        ? Number.parseInt(rawUserId, 10)
+        : null;
   return {
-    userId: raw.userId ?? null,
-    username: raw.username ?? null,
-    email: raw.email ?? null,
-    displayName: raw.displayName ?? raw.name ?? null,
+    userId,
+    username: profile.username ?? status?.username ?? null,
+    email: profile.email ?? null,
+    displayName: profile.displayName ?? profile.name ?? null,
   };
 }
 

@@ -6,6 +6,7 @@ import { createAdapter, parseCommandArgs, requireFlag } from '../cli.ts';
 import { AdapterError } from '../adapter.ts';
 import { UsageError } from '../errors.ts';
 import { writeOk, writeHuman, formatTasksTable } from '../output.ts';
+import { resolveUser } from '../users.ts';
 import type { GlobalOpts } from '../cli.ts';
 import type {
   TickTickAdapter,
@@ -84,6 +85,18 @@ export async function create(argv: readonly string[], opts: GlobalOpts): Promise
   const projectId =
     flags.project !== undefined ? await resolveProjectId(adapter, flags.project) : undefined;
 
+  const assignee = flags.assignee !== undefined ? resolveUser(flags.assignee) : undefined;
+
+  if (flags.section !== undefined && projectId === undefined) {
+    throw new UsageError(
+      '--section requires --project so the section can be resolved within that project.',
+    );
+  }
+  const columnId =
+    flags.section !== undefined && projectId !== undefined
+      ? await resolveSectionId(adapter, projectId, flags.section)
+      : undefined;
+
   const draft: TaskDraft = {
     title,
     ...(projectId !== undefined && { projectId }),
@@ -94,6 +107,8 @@ export async function create(argv: readonly string[], opts: GlobalOpts): Promise
     ...(flags['all-day'] === 'true' && { isAllDay: true }),
     ...(flags.tags !== undefined && { tags: parseTagList(flags.tags) }),
     ...(flags.repeat !== undefined && { repeatFlag: flags.repeat }),
+    ...(flags.assignee !== undefined && { assignee }),
+    ...(columnId !== undefined && { columnId }),
   };
 
   const task = await adapter.createTask(draft);
@@ -125,9 +140,19 @@ export async function update(argv: readonly string[], opts: GlobalOpts): Promise
   }
 
   const adapter = createAdapter();
+  const assignee = flags.assignee !== undefined ? resolveUser(flags.assignee) : undefined;
+
+  // For update, projectId is required as a flag, so resolve it first so
+  // --section can be fuzzy-matched within the correct project.
+  const resolvedProjectId = await resolveProjectId(adapter, projectId);
+  const columnId =
+    flags.section !== undefined
+      ? await resolveSectionId(adapter, resolvedProjectId, flags.section)
+      : undefined;
+
   const patch: TaskPatch = {
     id,
-    projectId,
+    projectId: resolvedProjectId,
     title,
     ...(flags.content !== undefined && { content: flags.content }),
     ...(flags.priority !== undefined && { priority: parsePriority(flags.priority) }),
@@ -136,6 +161,8 @@ export async function update(argv: readonly string[], opts: GlobalOpts): Promise
     ...(flags['all-day'] === 'true' && { isAllDay: true }),
     ...(flags.tags !== undefined && { tags: parseTagList(flags.tags) }),
     ...(flags.repeat !== undefined && { repeatFlag: flags.repeat }),
+    ...(flags.assignee !== undefined && { assignee }),
+    ...(columnId !== undefined && { columnId }),
   };
 
   const task = await adapter.updateTask(patch);
@@ -228,6 +255,43 @@ async function resolveProjectId(adapter: TickTickAdapter, idOrName: string): Pro
     );
   }
   return project.id;
+}
+
+async function resolveSectionId(
+  adapter: TickTickAdapter,
+  projectId: string,
+  idOrName: string,
+): Promise<string> {
+  // Fast path: if it looks like an ObjectId (24 hex chars), treat as ID.
+  if (/^[a-f0-9]{24}$/i.test(idOrName)) return idOrName;
+
+  const sections = await adapter.listSections(projectId);
+  const query = idOrName.toLowerCase();
+
+  // Exact (case-insensitive) name match wins outright.
+  const exact = sections.filter((s) => s.name.toLowerCase() === query);
+  if (exact.length === 1) return exact[0]!.id;
+  if (exact.length > 1) {
+    const names = exact.map((s) => `${s.name} (${s.id})`).join(', ');
+    throw new UsageError(
+      `Multiple sections named '${idOrName}' in project ${projectId}: ${names}. Pass --section <id> to disambiguate.`,
+    );
+  }
+
+  // Prefix match (case-insensitive) as a fallback.
+  const prefix = sections.filter((s) => s.name.toLowerCase().startsWith(query));
+  if (prefix.length === 1) return prefix[0]!.id;
+  if (prefix.length > 1) {
+    const names = prefix.map((s) => `${s.name} (${s.id})`).join(', ');
+    throw new UsageError(
+      `Ambiguous --section '${idOrName}' in project ${projectId}: ${names}. Pass --section <id> to disambiguate.`,
+    );
+  }
+
+  throw new AdapterError(
+    'NOT_FOUND',
+    `No section matching '${idOrName}' in project ${projectId}. Run \`ticktick sections list --project ${projectId}\` to see available sections.`,
+  );
 }
 
 async function resolveTaskProjectId(

@@ -5,6 +5,7 @@
 import { createAdapter } from '../cli.ts';
 import { clearSession, getSessionAgeSeconds } from '../session.ts';
 import { writeOk } from '../output.ts';
+import { rememberSelf } from '../users.ts';
 import type { GlobalOpts } from '../cli.ts';
 
 export async function login(_argv: readonly string[], _opts: GlobalOpts): Promise<void> {
@@ -12,7 +13,12 @@ export async function login(_argv: readonly string[], _opts: GlobalOpts): Promis
   // authenticate() calls client.login() unconditionally.
   const adapter = createAdapter();
   const user = await adapter.authenticate();
-  writeOk({ user, sessionAgeSec: 0 });
+  // Cache self so --assignee me works on subsequent commands.
+  // authenticate() already calls getUser() internally, which hits both
+  // /user/profile and /user/status to get the numeric userId.
+  const withId = await adapter.getUser();
+  rememberSelf(withId);
+  writeOk({ user: withId, sessionAgeSec: 0 });
 }
 
 export async function logout(_argv: readonly string[], _opts: GlobalOpts): Promise<void> {
@@ -33,6 +39,7 @@ export async function logout(_argv: readonly string[], _opts: GlobalOpts): Promi
 export async function whoami(_argv: readonly string[], _opts: GlobalOpts): Promise<void> {
   const adapter = createAdapter();
   const user = await adapter.getUser();
+  rememberSelf(user);
   const age = getSessionAgeSeconds();
   writeOk({ user, sessionAgeSec: age ?? 0 });
 }

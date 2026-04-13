@@ -18,6 +18,7 @@ import {
   chmodSync,
   existsSync,
   mkdirSync,
+  readFileSync,
   statSync,
   unlinkSync,
 } from 'node:fs';
@@ -75,6 +76,47 @@ export function clearSession(): void {
       // Non-fatal; the logout command reports overall success/failure.
     }
   }
+}
+
+/**
+ * Validate the on-disk session file; if the shape is wrong (malformed JSON,
+ * missing required fields), delete it so the library falls through to a
+ * fresh login on next request.
+ *
+ * This is a defensive layer over ticktick-client's FileSessionStore, which
+ * will happily load any JSON it can parse — including stubs like {"invalid":
+ * true} — and then crash inside the client when it tries to serialize the
+ * missing cookies map. Session corruption (manual tinkering, interrupted
+ * writes, etc.) is a plausible real-world scenario we need to recover from.
+ *
+ * Call from command code before constructing the adapter.
+ */
+export function sanitizeSessionFile(): void {
+  const path = resolveSessionPath();
+  if (!existsSync(path)) return;
+  try {
+    const raw = readFileSync(path, 'utf-8');
+    const parsed = JSON.parse(raw) as unknown;
+    if (isValidSessionShape(parsed)) return;
+  } catch {
+    // Parse error or other I/O — fall through and delete below
+  }
+  try {
+    unlinkSync(path);
+  } catch {
+    // Non-fatal
+  }
+}
+
+function isValidSessionShape(value: unknown): boolean {
+  if (typeof value !== 'object' || value === null) return false;
+  const v = value as Record<string, unknown>;
+  return (
+    typeof v['username'] === 'string' &&
+    typeof v['token'] === 'string' &&
+    typeof v['cookies'] === 'object' &&
+    v['cookies'] !== null
+  );
 }
 
 /**

@@ -7,7 +7,7 @@
  */
 
 import { loadCredentials } from './env.ts';
-import { resolveSessionPath } from './session.ts';
+import { resolveSessionPath, sanitizeSessionFile } from './session.ts';
 import { TickTickClientAdapter, AdapterError, mapLibraryError } from './adapter.ts';
 import type { TickTickAdapter } from './adapter.ts';
 import { UsageError, getExitCode } from './errors.ts';
@@ -18,6 +18,8 @@ import * as tasks from './commands/tasks.ts';
 import * as projects from './commands/projects.ts';
 import * as tags from './commands/tags.ts';
 import * as checklist from './commands/checklist.ts';
+import * as members from './commands/members.ts';
+import * as sections from './commands/sections.ts';
 
 // ──────────────────────────────────────────────────────────────────
 // Public surface
@@ -38,9 +40,13 @@ export function createAdapter(): TickTickAdapter {
   if (!creds) {
     throw new AdapterError(
       'AUTH_MISSING_CREDS',
-      'No TickTick credentials. Set TICKTICK_EMAIL and TICKTICK_PASSWORD in ~/.env or the environment.',
+      'No TickTick credentials. Set TICKTICK_EMAIL and TICKTICK_PASSWORD in ~/.env or ~/.config/PAI/.env.',
     );
   }
+  // Defensive: if the session file on disk is malformed, delete it before
+  // the library tries to load it. Otherwise the library crashes deep inside
+  // on a missing cookies map.
+  sanitizeSessionFile();
   return new TickTickClientAdapter({
     username: creds.email,
     password: creds.password,
@@ -80,6 +86,12 @@ export async function main(argv: readonly string[]): Promise<number> {
         return 0;
       case 'checklist':
         await routeChecklist(rest, opts);
+        return 0;
+      case 'members':
+        await routeMembers(rest, opts);
+        return 0;
+      case 'sections':
+        await routeSections(rest, opts);
         return 0;
       default:
         throw new UsageError(`Unknown command: ${command}. Run 'ticktick help' for usage.`);
@@ -162,6 +174,30 @@ async function routeChecklist(argv: readonly string[], opts: GlobalOpts): Promis
       return checklist.remove(rest, opts);
     default:
       throw new UsageError(`Unknown checklist subcommand: ${sub}`);
+  }
+}
+
+async function routeMembers(argv: readonly string[], opts: GlobalOpts): Promise<void> {
+  const [sub, ...rest] = argv;
+  switch (sub) {
+    case undefined:
+    case 'list':
+      return members.list(rest, opts);
+    case 'remove':
+      return members.remove(rest, opts);
+    default:
+      throw new UsageError(`Unknown members subcommand: ${sub}`);
+  }
+}
+
+async function routeSections(argv: readonly string[], opts: GlobalOpts): Promise<void> {
+  const [sub, ...rest] = argv;
+  switch (sub) {
+    case undefined:
+    case 'list':
+      return sections.list(rest, opts);
+    default:
+      throw new UsageError(`Unknown sections subcommand: ${sub}`);
   }
 }
 
@@ -285,7 +321,7 @@ COMMANDS
   tasks create --title <t> [flags]         Create a task
     --project <id|name> --content <md>
     --due <ISO> --priority none|low|medium|high
-    --tags a,b,c
+    --tags a,b,c --section <id|name> --assignee me|<id>|<name>
   tasks update --id <id> --project <pid> [flags]
                                            Update a task (same optional fields)
   tasks complete --id <id> [--project <pid>]
@@ -298,6 +334,14 @@ COMMANDS
 
   projects list                            List all projects
   projects get --id <id|name>              Fetch one project
+
+  sections list --project <id|name>        List kanban sections (columns) in a project
+
+  members list --project <id|name>         List members of a shared project
+  members remove --project <id|name> --user <id|name|me> [--force]
+                                           Revoke a user's access to a shared
+                                           project. Dry-run by default; pass
+                                           --force to actually remove.
 
   tags list                                List all tags
 
@@ -316,8 +360,8 @@ EXIT CODES
   6  validation error
 
 ENVIRONMENT
-  TICKTICK_EMAIL      (or TICKTICK_USERNAME) — set in ~/.env or the shell
-  TICKTICK_PASSWORD
+  TICKTICK_EMAIL      (or TICKTICK_USERNAME) — PAI reads ~/.config/PAI/.env
+  TICKTICK_PASSWORD    first, then overlays ~/.env (if present) for user overrides
   TICKTICK_DEBUG=1    forces --debug
 
 NOTES

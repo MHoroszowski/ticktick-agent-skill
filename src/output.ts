@@ -10,6 +10,7 @@
  */
 
 import { AdapterError, UsageError, mapLibraryError } from './errors.ts';
+import { getCachedUsers } from './users.ts';
 import type { Task, Project, ChecklistItem } from './adapter.ts';
 
 let debugEnabled = false;
@@ -69,14 +70,31 @@ function buildErrorEnvelope(
 
 export function formatTasksTable(tasks: readonly Task[]): string {
   if (tasks.length === 0) return '(no tasks)';
+  const knownUsers = getCachedUsers();
+  const anyAssigned = tasks.some((t) => t.assignee !== null);
+
   const rows = tasks.map((t) => ({
     id: shortenId(t.id),
     status: t.status.padEnd(10),
     pri: priorityGlyph(t.priority),
     due: formatDue(t.dueDate),
+    assignee: anyAssigned ? resolveAssigneeName(t.assignee, knownUsers) : null,
     title: truncate(t.title, 50),
     project: shortenId(t.projectId),
   }));
+
+  if (anyAssigned) {
+    const header = `${'ID'.padEnd(9)} ${'STATUS'.padEnd(10)} ${'PRI'} ${'DUE'.padEnd(16)} ${'ASSIGN'.padEnd(10)} ${'TITLE'.padEnd(45)} ${'PROJECT'}`;
+    const divider = '─'.repeat(Math.min(110, header.length));
+    const body = rows
+      .map(
+        (r) =>
+          `${r.id.padEnd(9)} ${r.status} ${r.pri.padEnd(3)} ${r.due.padEnd(16)} ${(r.assignee ?? '—').padEnd(10)} ${truncate(r.title, 45).padEnd(45)} ${r.project}`,
+      )
+      .join('\n');
+    return `${header}\n${divider}\n${body}`;
+  }
+
   const header = `${'ID'.padEnd(9)} ${'STATUS'.padEnd(10)} ${'PRI'} ${'DUE'.padEnd(16)} ${'TITLE'.padEnd(50)} ${'PROJECT'}`;
   const divider = '─'.repeat(Math.min(100, header.length));
   const body = rows
@@ -86,6 +104,16 @@ export function formatTasksTable(tasks: readonly Task[]): string {
     )
     .join('\n');
   return `${header}\n${divider}\n${body}`;
+}
+
+function resolveAssigneeName(
+  assignee: number | null,
+  known: readonly { userId: number; displayName: string | null }[],
+): string {
+  if (assignee === null) return '';
+  const match = known.find((u) => u.userId === assignee);
+  if (match?.displayName) return truncate(match.displayName, 10);
+  return `#${String(assignee).slice(-6)}`;
 }
 
 export function formatProjectsTable(projects: readonly Project[]): string {
