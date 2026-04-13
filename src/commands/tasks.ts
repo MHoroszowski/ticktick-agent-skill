@@ -37,11 +37,33 @@ export async function list(argv: readonly string[], opts: GlobalOpts): Promise<v
     limit = n;
   }
 
+  // --section filter: must know the project so the section name resolves
+  // within the right column list. Section ids are globally scoped but
+  // name-based lookup needs the project context.
+  if (flags.section !== undefined && projectId === undefined) {
+    throw new UsageError(
+      '--section requires --project so the section can be resolved within that project.',
+    );
+  }
+  const sectionId =
+    flags.section !== undefined && projectId !== undefined
+      ? await resolveSectionId(adapter, projectId, flags.section)
+      : undefined;
+
+  // --assignee filter: resolve via users.ts. 'me'/'self' → cached self,
+  // 'unassign'/'none'/'null' → filter to unassigned tasks only.
+  let assigneeFilter: number | null | undefined;
+  if (flags.assignee !== undefined) {
+    assigneeFilter = resolveUser(flags.assignee);
+  }
+
   const filters: TaskListFilters = {
     ...(projectId !== undefined && { projectId }),
     ...(flags.status !== undefined && { status: parseStatusFilter(flags.status) }),
     ...(flags.due !== undefined && { due: parseDueFilter(flags.due) }),
     ...(flags.tag !== undefined && { tag: flags.tag }),
+    ...(sectionId !== undefined && { sectionId }),
+    ...(assigneeFilter !== undefined && { assignee: assigneeFilter }),
     ...(limit !== undefined && { limit }),
   };
 

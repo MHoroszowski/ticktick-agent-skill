@@ -196,6 +196,14 @@ async function routeSections(argv: readonly string[], opts: GlobalOpts): Promise
     case undefined:
     case 'list':
       return sections.list(rest, opts);
+    case 'create':
+      return sections.create(rest, opts);
+    case 'rename':
+      return sections.rename(rest, opts);
+    case 'delete':
+      return sections.remove(rest, opts);
+    case 'move':
+      return sections.move(rest, opts);
     default:
       throw new UsageError(`Unknown sections subcommand: ${sub}`);
   }
@@ -316,6 +324,8 @@ COMMANDS
     --status open|completed|abandoned|all    filter by status (default: open)
     --due today|overdue|week                 filter by due window
     --tag <name>                             filter by tag
+    --section <id|name>                      filter by section (requires --project)
+    --assignee me|<id>|<name>|unassign       filter by assignee (unassign = unassigned only)
     --limit N                                cap result count
   tasks get --id <taskId>                  Fetch a single task
   tasks create --title <t> [flags]         Create a task
@@ -336,6 +346,20 @@ COMMANDS
   projects get --id <id|name>              Fetch one project
 
   sections list --project <id|name>        List kanban sections (columns) in a project
+  sections create --project <id|name> --name <text> [--before|--after <id|name>]
+                                           Create a new section; optional placement
+                                           relative to an anchor section.
+  sections rename --project <id|name> --section <id|name> --to <text>
+                                           Rename an existing section.
+  sections delete --project <id|name> --section <id|name> [--reassign <id|name>] --confirm
+                                           Delete a section. Destructive: requires
+                                           --confirm. Without --reassign, tasks in
+                                           the section are orphaned (columnId cleared).
+                                           With --reassign, tasks are moved to the
+                                           named target section first.
+  sections move --project <id|name> --section <id|name> --before|--after <id|name>
+                                           Reorder a section by placing it before
+                                           or after another section in the list.
 
   members list --project <id|name>         List members of a shared project
   members remove --project <id|name> --user <id|name|me> [--force]
