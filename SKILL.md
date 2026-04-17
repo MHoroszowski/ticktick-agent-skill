@@ -134,8 +134,11 @@ Multiple v1.3 features hit the same shape of library bug: the library uses `POST
 
 - All workflows invoke `~/.claude/skills/TickTick/bin/ticktick <subcommand> [flags]`.
 - CLI output is JSON by default. Parse `.ok` — on `false`, read `.error.code` and `.error.message` to explain the failure to the user.
-- **Never paste raw session content or credentials into chat.** Credentials live in `~/.env` as `TICKTICK_EMAIL` and `TICKTICK_PASSWORD`. The session blob lives at `~/.claude/skills/TickTick/.session/ticktick.json` (mode 0600).
-- On `AUTH_MISSING_CREDS` → tell the user to set credentials in `~/.env`.
+- **Never paste raw session content or credentials into chat.** Two accounts are supported via the global `--account live|test` flag (default: `live`):
+  - `--account live` — user's personal account. Creds: `TICKTICK_EMAIL` / `TICKTICK_PASSWORD` (typically in `~/.env`). Session: `.session/ticktick.json`.
+  - `--account test` — project service account for PAI-skill smoke/probe work. Creds: `TICKTICK_TEST_EMAIL` / `TICKTICK_TEST_PASSWORD` (in `~/.config/PAI/.env`). Session: `.session/ticktick-test.json`.
+  - Both session files are 0600. `whoami` responses include an `account` field so you can verify which one you're hitting. Use `--account test` for any exploratory probe or smoke test so agent writes never collide with the user's live task data.
+- On `AUTH_MISSING_CREDS` → tell the user which account is selected and which env keys are missing. For `live`, suggest `~/.env`; for `test`, suggest `~/.config/PAI/.env`.
 - On `AUTH_FAILED` / `AUTH_EXPIRED` → tell the user to run `ticktick login` or check their password.
 - On `NOT_FOUND` → say so and suggest `ticktick projects list` or `ticktick tasks list` to confirm ids.
 - On `RATE_LIMITED` → back off and retry later; don't hammer the API.

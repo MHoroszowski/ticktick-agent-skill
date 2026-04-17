@@ -12,6 +12,8 @@ import { TickTickClientAdapter, AdapterError, mapLibraryError } from './adapter.
 import type { TickTickAdapter } from './adapter.ts';
 import { UsageError, getExitCode } from './errors.ts';
 import { setDebug, writeError, writeHuman } from './output.ts';
+import { getAccount, setAccount } from './context.ts';
+import type { Account } from './context.ts';
 
 import * as auth from './commands/auth.ts';
 import * as tasks from './commands/tasks.ts';
@@ -28,20 +30,23 @@ import * as sections from './commands/sections.ts';
 export type GlobalOpts = {
   readonly human: boolean;
   readonly debug: boolean;
+  readonly account: Account;
 };
 
 /**
- * Factory used by every command handler. Loads creds, resolves session
- * path, constructs the adapter. Throws AUTH_MISSING_CREDS if either env
- * var is missing.
+ * Factory used by every command handler. Loads creds (for the active
+ * account, set via context.setAccount), resolves the account-scoped
+ * session path, constructs the adapter. Throws AUTH_MISSING_CREDS if
+ * either env var is missing.
  */
 export function createAdapter(): TickTickAdapter {
+  const account = getAccount();
   const creds = loadCredentials();
   if (!creds) {
-    throw new AdapterError(
-      'AUTH_MISSING_CREDS',
-      'No TickTick credentials. Set TICKTICK_EMAIL and TICKTICK_PASSWORD in ~/.env or ~/.config/PAI/.env.',
-    );
+    const hint = account === 'test'
+      ? 'No TickTick TEST credentials. Set TICKTICK_TEST_EMAIL and TICKTICK_TEST_PASSWORD in ~/.config/PAI/.env (project-scoped service account).'
+      : 'No TickTick credentials. Set TICKTICK_EMAIL and TICKTICK_PASSWORD in ~/.env or ~/.config/PAI/.env.';
+    throw new AdapterError('AUTH_MISSING_CREDS', hint);
   }
   // Defensive: if the session file on disk is malformed, delete it before
   // the library tries to load it. Otherwise the library crashes deep inside
@@ -57,6 +62,7 @@ export function createAdapter(): TickTickAdapter {
 export async function main(argv: readonly string[]): Promise<number> {
   const { opts, positional } = parseGlobalFlags(argv);
   setDebug(opts.debug);
+  setAccount(opts.account);
 
   if (positional.length === 0 || positional[0] === 'help' || positional[0] === '--help' || positional[0] === '-h') {
     writeHuman(helpText());
@@ -287,8 +293,12 @@ async function routeSections(argv: readonly string[], opts: GlobalOpts): Promise
 // ──────────────────────────────────────────────────────────────────
 
 /**
- * Strip global flags (--human, --debug, --json, --no-color) from argv,
- * returning the cleaned positional array plus the parsed opts.
+ * Strip global flags (--human, --debug, --json, --no-color, --account)
+ * from argv, returning the cleaned positional array plus the parsed opts.
+ *
+ * --account accepts either `--account <value>` or `--account=<value>` and
+ * defaults to 'live' if omitted. Unknown values raise UsageError so an
+ * agent typo doesn't silently default to the wrong account.
  */
 function parseGlobalFlags(argv: readonly string[]): {
   opts: GlobalOpts;
@@ -296,24 +306,35 @@ function parseGlobalFlags(argv: readonly string[]): {
 } {
   let human = false;
   let debug = false;
+  let account: Account = 'live';
   const positional: string[] = [];
-  for (const token of argv) {
-    switch (token) {
-      case '--human':
-        human = true;
-        break;
-      case '--debug':
-        debug = true;
-        break;
-      case '--json':
-      case '--no-color':
-        // no-op: JSON is the default, color isn't emitted
-        break;
-      default:
-        positional.push(token);
+  for (let i = 0; i < argv.length; i++) {
+    const token = argv[i]!;
+    if (token === '--human') { human = true; continue; }
+    if (token === '--debug') { debug = true; continue; }
+    if (token === '--json' || token === '--no-color') continue;
+    if (token === '--account') {
+      const next = argv[i + 1];
+      if (next === undefined || next.startsWith('--')) {
+        throw new UsageError('--account requires a value: live or test');
+      }
+      account = parseAccountValue(next);
+      i += 1;
+      continue;
     }
+    if (token.startsWith('--account=')) {
+      account = parseAccountValue(token.slice('--account='.length));
+      continue;
+    }
+    positional.push(token);
   }
-  return { opts: { human, debug }, positional };
+  return { opts: { human, debug, account }, positional };
+}
+
+function parseAccountValue(raw: string): Account {
+  const v = raw.trim().toLowerCase();
+  if (v === 'live' || v === 'test') return v;
+  throw new UsageError(`Unknown --account value '${raw}'. Expected 'live' or 'test'.`);
 }
 
 /**
@@ -424,10 +445,18 @@ USAGE
   ticktick <command> [subcommand] [flags]
 
 GLOBAL FLAGS
-  --human        Pretty-print instead of JSON (default: JSON)
-  --debug        Emit debug info to stderr
-  --json         Explicit JSON output (default)
-  --no-color     No color in output (no-op for now)
+  --human            Pretty-print instead of JSON (default: JSON)
+  --debug            Emit debug info to stderr
+  --json             Explicit JSON output (default)
+  --no-color         No color in output (no-op for now)
+  --account live|test
+                     Select which TickTick account to use. Default: live
+                     (your personal account, reads TICKTICK_EMAIL /
+                     TICKTICK_PASSWORD from ~/.env). Pass 'test' to use
+                     the dedicated PAI service account (reads
+                     TICKTICK_TEST_EMAIL / TICKTICK_TEST_PASSWORD from
+                     ~/.config/PAI/.env). Session files are namespaced
+                     per account so the two never clobber each other.
 
 COMMANDS
   login                                    Force fresh login (seeds session)
@@ -577,8 +606,13 @@ EXIT CODES
   6  validation error
 
 ENVIRONMENT
-  TICKTICK_EMAIL      (or TICKTICK_USERNAME) — PAI reads ~/.config/PAI/.env
-  TICKTICK_PASSWORD    first, then overlays ~/.env (if present) for user overrides
+  Live account (default, --account live):
+    TICKTICK_EMAIL    (or TICKTICK_USERNAME) — user's personal account
+    TICKTICK_PASSWORD
+  Test account (--account test):
+    TICKTICK_TEST_EMAIL    (or TICKTICK_TEST_USERNAME) — project service account
+    TICKTICK_TEST_PASSWORD
+  Both: PAI reads ~/.config/PAI/.env first, then overlays ~/.env.
   TICKTICK_DEBUG=1    forces --debug
 
 NOTES

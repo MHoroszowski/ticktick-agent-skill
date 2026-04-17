@@ -24,9 +24,19 @@ import {
 } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { getAccount } from './context.ts';
 
 const DIR_MODE = 0o700;
 const FILE_MODE = 0o600;
+
+/**
+ * Session file basename is account-scoped so the live and test accounts
+ * never clobber each other's auth state. Lives in the same .session/
+ * directory to keep the 0700 / 0600 perm enforcement centralized.
+ */
+function sessionFileName(): string {
+  return getAccount() === 'test' ? 'ticktick-test.json' : 'ticktick.json';
+}
 
 /**
  * Returns the absolute path to the session file, creating the parent
@@ -49,7 +59,7 @@ export function resolveSessionPath(): string {
     }
   }
 
-  const sessionPath = join(sessionDir, 'ticktick.json');
+  const sessionPath = join(sessionDir, sessionFileName());
 
   if (existsSync(sessionPath)) {
     try {

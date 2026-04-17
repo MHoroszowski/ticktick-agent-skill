@@ -102,25 +102,32 @@ cd ~/.claude/skills/TickTick
 bun install
 ```
 
-Add credentials to `~/.env`:
+Add credentials to `~/.env` for your personal (live) account:
 ```
 TICKTICK_EMAIL=your-email@example.com
 TICKTICK_PASSWORD=your-password
 ```
 
-(Or set them in the environment directly. The skill checks `process.env` first, then `~/.env`.)
+For PAI-skill smoke tests and exploratory probes, add a dedicated service-account to `~/.config/PAI/.env` (user-scoped credentials live in `~/.env`; project-scoped creds live in the XDG file):
+```
+TICKTICK_TEST_EMAIL=test-service-account@example.com
+TICKTICK_TEST_PASSWORD=test-password
+```
 
-Verify login:
+(Or set any of these in the environment directly. The skill checks `process.env` first, then `~/.config/PAI/.env`, then `~/.env`.)
+
+Verify login against either account via the global `--account` flag:
 ```bash
-./bin/ticktick whoami
+./bin/ticktick whoami                  # defaults to --account live
+./bin/ticktick --account test whoami   # service account
 ```
 
-Expected output on first run:
+Expected output includes an `account` field:
 ```json
-{"ok":true,"user":{"userId":"...","email":"your-email@example.com",...},"sessionAgeSec":0}
+{"ok":true,"account":"live","user":{"userId":"...","email":"...",...},"sessionAgeSec":0}
 ```
 
-The session is cached at `.session/ticktick.json` (mode 0600) so subsequent calls skip the login roundtrip.
+Sessions are cached at `.session/ticktick.json` (live) and `.session/ticktick-test.json` (test), both mode 0600 and gitignored. The two never collide — an agent running `--account test` commands won't touch your live session or task data.
 
 ## Usage (for humans)
 
@@ -198,14 +205,19 @@ Mitigations in place:
 
 ## Running the smoke test
 
+Defaults to the service (`test`) account so probes never touch your live task data.
+
 Prerequisites:
-- `TICKTICK_EMAIL` / `TICKTICK_PASSWORD` in `~/.env`
+- `TICKTICK_TEST_EMAIL` / `TICKTICK_TEST_PASSWORD` in `~/.config/PAI/.env` (the service account)
 - `jq` installed (`sudo apt-get install -y jq`)
-- A project named `TEST - PAI Skill` in your TickTick account (create it manually in the web UI first)
+- A project named `TEST - PAI Skill` on the service account (create with `./bin/ticktick --account test projects create --name "TEST - PAI Skill"`)
 
 ```bash
-./tests/smoke.sh
+./tests/smoke.sh                           # defaults to the test service account
+SMOKE_ACCOUNT=live ./tests/smoke.sh        # opt in to the live account (step 15's 🛒Shopping check only works here)
 ```
+
+When running against `live`, make sure `TICKTICK_EMAIL` / `TICKTICK_PASSWORD` are set in `~/.env` and the `TEST - PAI Skill` project exists on your live account.
 
 The script is idempotent — it creates, mutates, and cleans up a single test task plus a checklist item, and verifies auto-refresh by corrupting the session file.
 
@@ -246,7 +258,10 @@ TickTick/
 ├── tests/
 │   └── smoke.sh             # live-API end-to-end acceptance
 └── .session/                # 0700 dir, runtime-created, gitignored
-    └── ticktick.json        # 0600 file, library-owned session blob
+    ├── ticktick.json        # 0600 file, live-account session blob
+    ├── ticktick-test.json   # 0600 file, test-account session blob (when used)
+    ├── users.json           # 0600 file, live-account known-users cache
+    └── users-test.json      # 0600 file, test-account known-users cache
 ```
 
 ## Exit codes

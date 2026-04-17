@@ -1,5 +1,5 @@
 /**
- * env.ts — load TICKTICK_EMAIL and TICKTICK_PASSWORD.
+ * env.ts — load TickTick credentials.
  *
  * Precedence (first match wins at read time; reads cache both files):
  *   1. process.env (already set, from a parent shell or CLI wrapper)
@@ -11,6 +11,15 @@
  * the user's personal file and is read as an optional overlay so users
  * can keep ~/.env for their own purposes without PAI claiming it.
  *
+ * Two accounts are supported, selected by `context.getAccount()`:
+ *   - 'live' (default) — the user's personal TickTick account. Keys:
+ *     TICKTICK_EMAIL (or TICKTICK_USERNAME) and TICKTICK_PASSWORD.
+ *     These are user-scoped and belong in ~/.env.
+ *   - 'test' — a dedicated service account for PAI-skill development.
+ *     Keys: TICKTICK_TEST_EMAIL (or TICKTICK_TEST_USERNAME) and
+ *     TICKTICK_TEST_PASSWORD. These are project-scoped and belong in
+ *     ~/.config/PAI/.env.
+ *
  * This skill never reads credentials from settings.json or the skill
  * directory itself. If a secret lands in a file tracked by git or a
  * harness config, that's a bug.
@@ -19,6 +28,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
+import { getAccount } from './context.ts';
 
 export type Credentials = {
   readonly email: string;
@@ -26,15 +36,25 @@ export type Credentials = {
 };
 
 /**
- * Load credentials. Returns null if either value is missing — the caller
- * should surface AUTH_MISSING_CREDS with an actionable hint.
+ * Load credentials for the currently-active account (set via
+ * `context.setAccount`). Returns null if either value is missing — the
+ * caller should surface AUTH_MISSING_CREDS with an actionable hint.
  */
 export function loadCredentials(): Credentials | null {
-  const email =
-    readEnv('TICKTICK_EMAIL') ??
-    readEnv('TICKTICK_USERNAME') ??
-    null;
-  const password = readEnv('TICKTICK_PASSWORD') ?? null;
+  const account = getAccount();
+  const emailKeys = account === 'test'
+    ? ['TICKTICK_TEST_EMAIL', 'TICKTICK_TEST_USERNAME']
+    : ['TICKTICK_EMAIL', 'TICKTICK_USERNAME'];
+  const passwordKey = account === 'test'
+    ? 'TICKTICK_TEST_PASSWORD'
+    : 'TICKTICK_PASSWORD';
+
+  let email: string | null = null;
+  for (const key of emailKeys) {
+    const v = readEnv(key);
+    if (v) { email = v; break; }
+  }
+  const password = readEnv(passwordKey) ?? null;
   if (!email || !password) return null;
   return { email, password };
 }

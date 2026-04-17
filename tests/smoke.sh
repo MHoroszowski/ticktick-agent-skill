@@ -4,9 +4,14 @@
 # ─────────────────────────────────────────────────────────────────
 #
 # Prerequisites:
-#   1. `TICKTICK_EMAIL` and `TICKTICK_PASSWORD` are set in ~/.env
-#   2. A project named "TEST - PAI Skill" exists in your TickTick account.
-#      Create it manually via the TickTick web UI before running this test.
+#   1. Test account (default): TICKTICK_TEST_EMAIL / TICKTICK_TEST_PASSWORD
+#      set in ~/.config/PAI/.env (dedicated service account so smoke probes
+#      never touch real task data). Opt back into the live account with
+#      `SMOKE_ACCOUNT=live tests/smoke.sh` — that path reads TICKTICK_EMAIL /
+#      TICKTICK_PASSWORD from ~/.env.
+#   2. A project named "TEST - PAI Skill" exists in the target account.
+#      Create via `./bin/ticktick --account test projects create --name "TEST - PAI Skill"`
+#      (or the live-account equivalent).
 #   3. `jq` is installed (apt install jq).
 #
 # What it does:
@@ -21,8 +26,31 @@
 set -euo pipefail
 
 SKILL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-TICKTICK="$SKILL_DIR/bin/ticktick"
-SESSION_FILE="$SKILL_DIR/.session/ticktick.json"
+# Default to the test service account; set SMOKE_ACCOUNT=live to smoke
+# against the real account (e.g. when verifying shared-list behavior).
+SMOKE_ACCOUNT="${SMOKE_ACCOUNT:-test}"
+case "$SMOKE_ACCOUNT" in
+  live|test) ;;
+  *) printf '[smoke] invalid SMOKE_ACCOUNT=%s (expected live|test)\n' "$SMOKE_ACCOUNT" >&2; exit 2 ;;
+esac
+# Bake --account into a tmpdir shim so every `"$TICKTICK" <cmd>` in the
+# rest of the script gets the right global flag without touching each
+# call site. The shim execs the real binary. We intentionally do NOT
+# trap-cleanup the tmpdir because the script already uses EXIT traps
+# for section cleanup — leaving a 50-byte shim behind in /tmp is fine
+# (it auto-cleans on reboot), and we avoid stomping on existing traps.
+TICKTICK_SHIM_DIR="$(mktemp -d -t pai-ticktick-shim-XXXXXX)"
+cat > "$TICKTICK_SHIM_DIR/ticktick" <<EOF
+#!/usr/bin/env bash
+exec "$SKILL_DIR/bin/ticktick" --account "$SMOKE_ACCOUNT" "\$@"
+EOF
+chmod +x "$TICKTICK_SHIM_DIR/ticktick"
+TICKTICK="$TICKTICK_SHIM_DIR/ticktick"
+if [ "$SMOKE_ACCOUNT" = "test" ]; then
+  SESSION_FILE="$SKILL_DIR/.session/ticktick-test.json"
+else
+  SESSION_FILE="$SKILL_DIR/.session/ticktick.json"
+fi
 TEST_PROJECT="TEST - PAI Skill"
 
 log() { printf '\033[1;36m[smoke]\033[0m %s\n' "$*"; }
