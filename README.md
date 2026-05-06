@@ -1,8 +1,44 @@
-# TickTick skill
+# ticktick-agent-skill
 
-A PAI skill that gives an AI agent (Athena) access to the user's TickTick account via a thin Bun CLI wrapping the `ticktick-client` npm library.
+A **host-agnostic agent skill** that gives an AI agent access to a user's TickTick account via a thin Bun CLI (`bin/ticktick`) wrapping the [`ticktick-client`](https://github.com/MHoroszowski/ticktick-client) library.
 
 Uses the **unofficial v2 TickTick API** (the same one the ticktick.com web app uses) rather than the severely limited official v1 OpenAPI. This is the only way to get full CRUD, tag management, move operations, and deletion — none of which the v1 API supports.
+
+## Architecture
+
+This skill follows a four-layer pattern:
+
+| Layer | What | Where | Used by |
+|---|---|---|---|
+| **L0 — Library** | Pure TickTick API client (no CLI, no agent docs) | [`MHoroszowski/ticktick-client`](https://github.com/MHoroszowski/ticktick-client) (fork of `jaeyeonling/ticktick-client`) — npm: `ticktick-client` | Human devs writing TypeScript apps |
+| **L1 — This skill** | CLI binary (`bin/ticktick`) + agent docs (`SKILL.md` + `Workflows/`) — depends on L0 | [`MHoroszowski/ticktick-agent-skill`](https://github.com/MHoroszowski/ticktick-agent-skill) (this repo) | CLI users (`bunx ticktick`); AI agents reading `SKILL.md` |
+| **L2 — Host integration** | Host-specific glue: notification convention, customization-dir wiring, credential paths | E.g. `Releases/v5.0.0/.claude/skills/TickTick/PAI-INTEGRATION.md` inside the PAI fork | Host maintainers (PAI, Claude Code, MCP wrappers) |
+| **L3 — Personal customization** | Per-user defaults: default list, priority, tags, voice prefs, account env paths | `<host-customization-dir>/TickTick/PREFERENCES.md` (e.g. `~/.claude/PAI/USER/SKILLCUSTOMIZATIONS/TickTick/PREFERENCES.md` for PAI) | End users (private — never committed) |
+
+Standard library/CLI split convention: matches `axios` + community CLIs, `dotenv` + `dotenv-cli`, `marked` + `marked-cli`. The library has its own lifecycle (especially as a fork of an upstream); the agent skill is a downstream consumer.
+
+## Install
+
+This skill is consumed by host environments rather than installed standalone in most cases. Two install patterns:
+
+**Direct git clone (development / single user):**
+```bash
+git clone https://github.com/MHoroszowski/ticktick-agent-skill.git
+cd ticktick-agent-skill
+bun install
+chmod +x bin/ticktick
+./bin/ticktick whoami
+```
+
+**As a PAI optional skill:** see `PAI-INTEGRATION.md` inside the PAI install marker dir for the host-side install glue (credentials path, voice convention, customization wiring).
+
+**As a generic dependency in another repo's `package.json`:**
+```json
+"dependencies": {
+  "ticktick-agent-skill": "git+https://github.com/MHoroszowski/ticktick-agent-skill.git"
+}
+```
+After `bun install`, the CLI is available at `node_modules/.bin/ticktick`.
 
 ## What it does
 
