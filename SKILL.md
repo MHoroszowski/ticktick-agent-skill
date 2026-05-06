@@ -43,29 +43,48 @@ description: TickTick task and list management — create, list, update, complet
 
 ## Customization
 
-**Before executing, check for user customizations at:**
-`~/.claude/PAI/USER/SKILLCUSTOMIZATIONS/TickTick/`
+This skill reads per-user preferences from a **host-configured** location. The contract:
 
-If a `PREFERENCES.md` file exists there, load and apply it. Typical overrides: default list, preferred priority for quick-adds, timezone, response verbosity. If the directory does not exist, proceed with skill defaults.
+- **Path:** your host (PAI, Claude Code, custom MCP, etc.) provides a customization directory. The skill reads `<host-customization-dir>/TickTick/PREFERENCES.md` if present.
+- **PAI convention:** `~/.claude/PAI/USER/SKILLCUSTOMIZATIONS/TickTick/PREFERENCES.md`
+- **Fallback:** if no customization file exists, skill defaults are used.
 
-## 🚨 MANDATORY: Voice Notification (REQUIRED BEFORE ANY ACTION)
+### PREFERENCES.md schema
 
-**You MUST send this notification BEFORE doing anything else when this skill is invoked.**
+```markdown
+---
+skill: TickTick
+applies_to: live          # 'live', 'test', or 'both'
+updated: <ISO date>
+---
 
-1. **Send voice notification**:
-   ```bash
-   curl -s -X POST http://localhost:8888/notify \
-     -H "Content-Type: application/json" \
-     -d '{"message": "Running the WORKFLOWNAME workflow in the TickTick skill to ACTION"}' \
-     > /dev/null 2>&1 &
-   ```
+# Defaults
+- inbox_list: <list name>           # default list for quick-adds
+- default_priority: <none|low|medium|high>
+- default_tags: [<tag1>, <tag2>]    # auto-tags for quick-adds
+- timezone: <IANA tz>               # for relative date parsing
 
-2. **Output text notification**:
-   ```
-   Running the **WorkflowName** workflow in the **TickTick** skill to ACTION...
-   ```
+# Account configuration
+- live_creds_path: <env file>       # where TICKTICK_EMAIL/PASSWORD live
+- test_creds_path: <env file>       # where TICKTICK_TEST_EMAIL/PASSWORD live
+- session_dir: <path>               # where .session/*.json files write
 
-**This is not optional.** Replace `WORKFLOWNAME` with the matched workflow (ListTasks, CreateTask, etc.) and `ACTION` with a short human description.
+# Tag taxonomy (free-form)
+- tag_pattern: <description>
+- known_tags: [<list>]
+
+# Voice (host-specific; only honored if host supports it)
+- voice_enabled: <bool>
+- voice_id: <id>
+```
+
+Sections not present in PREFERENCES.md fall through to skill defaults. The host wires up the customization directory path; the skill respects whatever the host provides.
+
+## Host integration
+
+Different hosts wrap this skill differently. If your host (PAI, Claude Code, etc.) provides a notification system, agents should announce workflow start per the host's convention. See your host's skill-runtime docs for specifics.
+
+For PAI specifically: see `PAI-INTEGRATION.md` in the install marker dir for voice-notification glue, customization-path wiring, and credential-store conventions.
 
 ## Capabilities — Honest
 
@@ -132,13 +151,20 @@ Multiple v1.3 features hit the same shape of library bug: the library uses `POST
 
 ## Execution Contract
 
-- All workflows invoke `~/.claude/skills/TickTick/bin/ticktick <subcommand> [flags]`.
+- All workflows invoke the `ticktick` CLI. Path resolution depends on install method:
+  - **Git/local install:** `<skill-install-root>/bin/ticktick <subcommand> [flags]`
+  - **npm install (if published):** `bunx ticktick <subcommand> [flags]` or `node_modules/.bin/ticktick`
+  - PAI specifically resolves to `~/.claude/skills/TickTick/bin/ticktick`; see `PAI-INTEGRATION.md` for that host's path convention.
 - CLI output is JSON by default. Parse `.ok` — on `false`, read `.error.code` and `.error.message` to explain the failure to the user.
 - **Never paste raw session content or credentials into chat.** Two accounts are supported via the global `--account live|test` flag (default: `live`):
-  - `--account live` — user's personal account. Creds: `TICKTICK_EMAIL` / `TICKTICK_PASSWORD` (typically in `~/.env`). Session: `.session/ticktick.json`.
-  - `--account test` — project service account for PAI-skill smoke/probe work. Creds: `TICKTICK_TEST_EMAIL` / `TICKTICK_TEST_PASSWORD` (in `~/.config/PAI/.env`). Session: `.session/ticktick-test.json`.
+  - `--account live` — user's personal account. Creds keys: `TICKTICK_EMAIL` / `TICKTICK_PASSWORD`. Session: `<session-dir>/ticktick.json`.
+  - `--account test` — service account for skill smoke/probe work. Creds keys: `TICKTICK_TEST_EMAIL` / `TICKTICK_TEST_PASSWORD`. Session: `<session-dir>/ticktick-test.json`.
+  - **Where credentials live and where the session dir is depends on your host's secret-management convention.** Default lookup: process env, then a `.env` file in the skill install root.
+  - Host conventions:
+    - **PAI:** live in `~/.env`, test in `~/.config/PAI/.env`, session dir is `<skill-install-root>/.session/`.
+    - **Other hosts:** see your host's docs.
   - Both session files are 0600. `whoami` responses include an `account` field so you can verify which one you're hitting. Use `--account test` for any exploratory probe or smoke test so agent writes never collide with the user's live task data.
-- On `AUTH_MISSING_CREDS` → tell the user which account is selected and which env keys are missing. For `live`, suggest `~/.env`; for `test`, suggest `~/.config/PAI/.env`.
+- On `AUTH_MISSING_CREDS` → tell the user which account is selected and which env keys are missing. Point them at the host-specific credentials path (e.g. for PAI: `~/.env` for live, `~/.config/PAI/.env` for test).
 - On `AUTH_FAILED` / `AUTH_EXPIRED` → tell the user to run `ticktick login` or check their password.
 - On `NOT_FOUND` → say so and suggest `ticktick projects list` or `ticktick tasks list` to confirm ids.
 - On `RATE_LIMITED` → back off and retry later; don't hammer the API.
@@ -146,22 +172,32 @@ Multiple v1.3 features hit the same shape of library bug: the library uses `POST
 
 ## File Layout
 
+The skill repo (`MHoroszowski/ticktick-agent-skill`):
+
 ```
-~/.claude/skills/TickTick/
-├── SKILL.md                 # this file
-├── README.md                # honest capabilities + follow-up work
-├── package.json             # pins ticktick-client@0.2.1; emergency fork fallback documented
+<skill-install-root>/        # e.g. ~/.claude/skills/TickTick/ when installed under PAI
+├── SKILL.md                 # this file (agent-facing entry point)
+├── README.md                # human-facing: install + capabilities + follow-up work
+├── package.json             # depends on `ticktick-client` (the underlying library)
 ├── bin/ticktick             # Bun shim — chmod +x
 ├── src/
 │   ├── cli.ts               # dispatcher, arg parsing, global flags
-│   ├── adapter.ts           # 🔁 SWAP POINT — only file importing ticktick-client
+│   ├── adapter.ts           # wraps ticktick-client (the npm dep)
 │   ├── session.ts           # session file path + perm enforcement
-│   ├── env.ts               # ~/.env loader
+│   ├── env.ts               # env-file loader (`.env`, host-specific paths)
 │   ├── errors.ts            # AdapterError re-export, UsageError, exit codes
 │   ├── output.ts            # JSON + --human formatters
 │   └── commands/            # auth, tasks, projects, tags, checklist, members, sections
 ├── Workflows/               # 19 workflow files (v1.3)
 └── tests/smoke.sh           # live-API end-to-end acceptance
 ```
+
+The library it wraps (`MHoroszowski/ticktick-client` — kept as a clean fork of `jaeyeonling/ticktick-client`) lives in its own repo and is consumed via npm or git URL. This skill owns the CLI + agent docs; the library owns the API client.
+
+## Architecture (3-line summary for agents)
+
+- **L0 — Library:** `ticktick-client` (npm package; pure API client; no CLI, no agent docs).
+- **L1 — This skill:** `ticktick-agent-skill` (CLI binary + SKILL.md + Workflows/; depends on L0).
+- **L2/L3 — Host integration + personal customization:** see your host's docs (e.g. `PAI-INTEGRATION.md` for PAI).
 
 ARGUMENTS: $ARGUMENTS
