@@ -50,5 +50,5 @@ Don't bury the id change — if the user is chaining operations, they need to kn
 ## Errors
 
 - `AUTH_*` → as in `ListTasks.md`.
-- `NOT_FOUND` on the destination → "I couldn't find a list named '[X]'. Run `ticktick projects list` to see what's available."
+- `NOT_FOUND` on the destination → **do not create the destination list** (see `SKILL.md` § Autonomy Boundary). Say: "I couldn't find a list named '[X]', and I won't create one unless you ask. Run `ticktick projects list` to see what's available." Creating it happens only on an express request (→ `Workflows/CreateProject.md`).
 - `NOT_FOUND` on the task → "I couldn't find that task — was it maybe already moved or deleted?"

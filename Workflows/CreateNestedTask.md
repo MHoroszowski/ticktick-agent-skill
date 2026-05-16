@@ -27,6 +27,15 @@ Optional (extract if mentioned, same as CreateTask):
 
 The project for the child is auto-resolved from the parent — you do NOT need to pass `--project`.
 
+## Guardrails — read `SKILL.md` § Autonomy Boundary
+
+Same boundary as `CreateTask.md`. On a nested-subtask create:
+
+- **Tags:** only existing tags (verify with `ticktick tags list`); a new `--tags` string auto-creates the tag server-side — don't invent one. If the user named a missing tag, surface and ask.
+- **Reminders / alarms:** do NOT add `--remind` or any alarm/alert unless the user expressly asked. A due date is not a reminder request.
+- **Lists:** not applicable here (project inherits from the parent — never pass a new `--project`).
+- **Allowed freely:** `--due` and `--priority` when the user specified them.
+
 ## Resolve the parent id
 
 If the user named the parent by title rather than id, list and fuzzy-match first:

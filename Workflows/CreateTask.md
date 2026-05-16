@@ -23,6 +23,16 @@ Optional (extract if mentioned):
 - **content** — markdown body if the user provided a description
 - **tags** — comma-separated, e.g. `--tags work,urgent`
 
+## Guardrails — read `SKILL.md` § Autonomy Boundary
+
+This workflow is bound by the **Autonomy Boundary** in `SKILL.md`. In particular, on a task create:
+
+- **Tags:** only pass `--tags` for tags that already exist (verify with `ticktick tags list`). Passing a new tag string auto-creates it server-side — don't. If the user named a tag that doesn't exist, surface it and ask; never invent one.
+- **Lists:** never create a list. If the named project doesn't exist, see the `NOT_FOUND` handling below — do not create it.
+- **Reminders / alarms:** do NOT add `--remind` (or any alarm/alert) unless the user expressly asked to be reminded. A due date is not a reminder request.
+- **Sections:** don't pass a `--section` that doesn't exist on the target list — omit it and mention there's no such section.
+- **Allowed freely:** `--due` and `--priority` whenever the user specified them — these are not gated.
+
 ## Execute
 
 Minimum:
@@ -54,5 +64,5 @@ If the user didn't specify a project, the task lands in their default Inbox — 
 ## Errors
 
 - `AUTH_MISSING_CREDS` / `AUTH_FAILED` / `AUTH_EXPIRED` → as in `ListTasks.md`.
-- `NOT_FOUND` on the project → "I couldn't find a list named '[X]'. Do you want me to add it to your Inbox instead, or do you want to list your projects first?"
+- `NOT_FOUND` on the project → **do not create the list.** Say: "I couldn't find a list named '[X]', and I won't create a new list unless you ask me to. Want me to add this to your Inbox instead, or list your existing projects so you can pick one?" Creating the list happens only if the user then expressly asks (→ `Workflows/CreateProject.md`).
 - `VALIDATION` → pass the message through — usually a malformed date or bad priority value.

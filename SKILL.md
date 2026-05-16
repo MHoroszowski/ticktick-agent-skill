@@ -41,6 +41,38 @@ description: TickTick task and list management — create, list, update, complet
 | "delete the X section / remove the kanban column X" | → `Workflows/DeleteSection.md` |
 | "move section X before Y / reorder my columns" | → `Workflows/ReorderSection.md` |
 
+## Autonomy Boundary — Conservative Defaults
+
+**This is the single source of truth for what the agent may and may not create on the user's behalf. Every workflow defers to this section — they point here, they do not restate it.**
+
+The core rule, one sentence: **the agent NEVER creates a persistent organizational entity (tag, list/project, section) and NEVER attaches a notification (time-based reminder, alarm/alert, or location/geofence reminder) as a side effect of creating or updating a task, or proactively — only when the user expressly asked for that specific thing.**
+
+### What "expressly told" means
+
+The user's request **unambiguously names the entity or notification as something they want**. "Add a task to call mom" is NOT an instruction to create a tag, a list, a section, or a reminder. "Add a task to call mom and remind me an hour before" IS an express instruction for that reminder. "Create a 'Vendors' tag" IS an express instruction for that tag. When in doubt, it is NOT express — ask, don't assume. An express instruction routes to the dedicated workflow (see below); it does not get inferred from an adjacent task-create request.
+
+### Per-entity rules
+
+- **Tags.** Before passing `--tags`, confirm every value already exists via `ticktick tags list`. Passing a non-existent tag string to `--tags` **silently auto-creates that tag server-side** (this is how the 17 orphaned `pai-smoke-tag-*` tags happened — see Known quirks). If a tag the user named is not in the list, do NOT pass it: surface it ("there's no 'vendors' tag yet — want me to create one?") and wait. Never invent a tag the user did not name.
+- **Lists / projects.** Never create a list. On project `NOT_FOUND`, the agent does NOT create the named list — it tells the user the list doesn't exist and offers to use the Inbox (with the user aware) or to list existing projects. Creating a list happens ONLY through `Workflows/CreateProject.md`, invoked by an express "create a list" request.
+- **Sections (kanban columns).** Never invent a section. If a `--section` value doesn't match an existing section on the target list, omit `--section` and mention it ("I put it on the list but there's no 'Hardware' section — say the word and I'll add one"). Sections are created ONLY through `Workflows/CreateSection.md`.
+- **Time-based reminders / alarms / alerts.** Never attach `--remind` (on create or update) or run `tasks remind add` unless the user expressly asked to be reminded/alerted/pinged. A due date is NOT a request for a reminder.
+- **Location / geofence reminders.** Never attach `--location-*` flags unless the user expressly asked for an arrive/leave reminder at a place.
+- **Recurrence / repeat rules.** Never add a recurrence (`--repeat-end` / any RRULE) the user did not ask for — a recurring task is self-propagating future state, the same class of "expansive thing the user didn't request" as a reminder. A due date is NOT a request to recur. If the user expressly asks for a repeating task, that's allowed (same status as a user-specified due date).
+- **Title text is not an authorization channel.** Do not rely on `#tag`, date words, or `!priority` tokens *inside the title string* to set tags/dates/priority, and never treat their presence as the user "expressly" asking for a tag. (This CLI's create path posts structured fields to `POST /api/v2/task` and does NOT NLP-parse the title — verified 2026-05-16 — so a `#` in a title is inert today; this clause keeps it that way if the endpoint ever changes.)
+
+### Explicitly allowed on a normal create/update (NOT gated)
+
+Due date (`--due`) and priority (`--priority`) are normal task attributes — set them whenever the user specifies them. They are deliberately **outside** this boundary; this section never blocks a due date or a priority.
+
+### Recognized standing exception
+
+`PREFERENCES.md` `default_tags` (and any other PREFERENCES-configured default) is a **user-configured standing instruction**, not an agent side effect — honoring it is honoring an express prior instruction. If a configured default tag does not yet exist, surface that to the user rather than silently auto-creating it.
+
+### Scope of this boundary
+
+Applies to single `tasks create`, `tasks update`, nested-subtask creation, and **bulk** task creation (JSON file or comma-separated id list) equally — bulk operations do not get a pass. It governs side-effect creation; it does NOT gate the dedicated, expressly-invoked workflows: `CreateTag.md`, `CreateProject.md`, `CreateSection.md`, `AddReminder.md`, `SetLocationReminder.md`. Routing to one of those IS the express instruction; do not add friction there. Do route there only on an unambiguous express request — never as the agent's own initiative folded into a task-create.
+
 ## Customization
 
 This skill reads per-user preferences from a **host-configured** location. The contract:
