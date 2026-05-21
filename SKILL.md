@@ -51,6 +51,8 @@ The core rule, one sentence: **the agent NEVER creates a persistent organization
 
 The user's request **unambiguously names the entity or notification as something they want**. "Add a task to call mom" is NOT an instruction to create a tag, a list, a section, or a reminder. "Add a task to call mom and remind me an hour before" IS an express instruction for that reminder. "Create a 'Vendors' tag" IS an express instruction for that tag. When in doubt, it is NOT express — ask, don't assume. An express instruction routes to the dedicated workflow (see below); it does not get inferred from an adjacent task-create request.
 
+**Purpose is required, even when permission exists.** Tags and lists must serve a clear, current purpose — they are not speculative bins for "things we might want to organize this way someday." Speculative entities are banned even on an express request; if the use case is hypothetical, decline and revisit when the case is real. If the agent thinks a new tag or list is genuinely worth creating, the path is to surface the proposal with the reason — an "ask" is always available when the case is real.
+
 ### Per-entity rules
 
 - **Tags.** Before passing `--tags`, confirm every value already exists via `ticktick tags list`. Passing a non-existent tag string to `--tags` **silently auto-creates that tag server-side** (this is how the 17 orphaned `pai-smoke-tag-*` tags happened — see Known quirks). If a tag the user named is not in the list, do NOT pass it: surface it ("there's no 'vendors' tag yet — want me to create one?") and wait. Never invent a tag the user did not name.
