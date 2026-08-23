@@ -5,7 +5,7 @@
 #
 # Prerequisites:
 #   1. Test account (default): TICKTICK_TEST_EMAIL / TICKTICK_TEST_PASSWORD
-#      set in ~/.config/PAI/.env (dedicated service account so smoke probes
+#      set in ~/.config/athena/.env (dedicated service account so smoke probes
 #      never touch real task data). Opt back into the live account with
 #      `SMOKE_ACCOUNT=live tests/smoke.sh` — that path reads TICKTICK_EMAIL /
 #      TICKTICK_PASSWORD from ~/.env.

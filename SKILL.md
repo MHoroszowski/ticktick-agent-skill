@@ -195,10 +195,10 @@ Multiple v1.3 features hit the same shape of library bug: the library uses `POST
   - `--account test` — service account for skill smoke/probe work. Creds keys: `TICKTICK_TEST_EMAIL` / `TICKTICK_TEST_PASSWORD`. Session: `<session-dir>/ticktick-test.json`.
   - **Where credentials live and where the session dir is depends on your host's secret-management convention.** Default lookup: process env, then a `.env` file in the skill install root.
   - Host conventions:
-    - **PAI:** live in `~/.env`, test in `~/.config/PAI/.env`, session dir is `<skill-install-root>/.session/`.
+    - **Athena hosts:** live in `~/.env`, test in `~/.config/athena/.env`, session dir is `<skill-install-root>/.session/`.
     - **Other hosts:** see your host's docs.
   - Both session files are 0600. `whoami` responses include an `account` field so you can verify which one you're hitting. Use `--account test` for any exploratory probe or smoke test so agent writes never collide with the user's live task data.
-- On `AUTH_MISSING_CREDS` → tell the user which account is selected and which env keys are missing. Point them at the host-specific credentials path (e.g. for PAI: `~/.env` for live, `~/.config/PAI/.env` for test).
+- On `AUTH_MISSING_CREDS` → tell the user which account is selected and which env keys are missing. Point them at the host-specific credentials path (e.g. on Athena hosts: `~/.env` for live, `~/.config/athena/.env` for test).
 - On `AUTH_FAILED` / `AUTH_EXPIRED` → tell the user to run `ticktick login` or check their password.
 - On `NOT_FOUND` → say so and suggest `ticktick projects list` or `ticktick tasks list` to confirm ids.
 - On `RATE_LIMITED` → back off and retry later; don't hammer the API.

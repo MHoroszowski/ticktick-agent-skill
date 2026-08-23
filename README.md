@@ -144,13 +144,13 @@ TICKTICK_EMAIL=your-email@example.com
 TICKTICK_PASSWORD=your-password
 ```
 
-For PAI-skill smoke tests and exploratory probes, add a dedicated service-account to `~/.config/PAI/.env` (user-scoped credentials live in `~/.env`; project-scoped creds live in the XDG file):
+For skill smoke tests and exploratory probes, add a dedicated service-account to `~/.config/athena/.env` (user-scoped credentials live in `~/.env`; project-scoped creds live in the XDG file):
 ```
 TICKTICK_TEST_EMAIL=test-service-account@example.com
 TICKTICK_TEST_PASSWORD=test-password
 ```
 
-(Or set any of these in the environment directly. The skill checks `process.env` first, then `~/.config/PAI/.env`, then `~/.env`.)
+(Or set any of these in the environment directly. The skill checks `process.env` first, then `~/.config/athena/.env`, then `~/.env`.)
 
 Verify login against either account via the global `--account` flag:
 ```bash
@@ -246,7 +246,7 @@ Mitigations in place:
 Defaults to the service (`test`) account so probes never touch your live task data.
 
 Prerequisites:
-- `TICKTICK_TEST_EMAIL` / `TICKTICK_TEST_PASSWORD` in `~/.config/PAI/.env` (the service account)
+- `TICKTICK_TEST_EMAIL` / `TICKTICK_TEST_PASSWORD` in `~/.config/athena/.env` (the service account)
 - `jq` installed (`sudo apt-get install -y jq`)
 - A project named `TEST - PAI Skill` on the service account (create with `./bin/ticktick --account test projects create --name "TEST - PAI Skill"`)
 

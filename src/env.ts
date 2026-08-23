@@ -4,21 +4,21 @@
  * Precedence (first match wins at read time; reads cache both files):
  *   1. process.env (already set, from a parent shell or CLI wrapper)
  *   2. ~/.env — user-owned overlay (optional)
- *   3. ~/.config/PAI/.env — PAI-managed XDG-compliant secrets file
+ *   3. ~/.config/athena/.env — shared XDG-compliant secrets file
  *   4. undefined → caller decides whether to fail
  *
- * The XDG file is the canonical home for PAI-managed secrets; ~/.env is
+ * The XDG file is the canonical home for shared secrets; ~/.env is
  * the user's personal file and is read as an optional overlay so users
- * can keep ~/.env for their own purposes without PAI claiming it.
+ * can keep ~/.env for their own purposes without the shared file claiming it.
  *
  * Two accounts are supported, selected by `context.getAccount()`:
  *   - 'live' (default) — the user's personal TickTick account. Keys:
  *     TICKTICK_EMAIL (or TICKTICK_USERNAME) and TICKTICK_PASSWORD.
  *     These are user-scoped and belong in ~/.env.
- *   - 'test' — a dedicated service account for PAI-skill development.
+ *   - 'test' — a dedicated service account for skill development.
  *     Keys: TICKTICK_TEST_EMAIL (or TICKTICK_TEST_USERNAME) and
  *     TICKTICK_TEST_PASSWORD. These are project-scoped and belong in
- *     ~/.config/PAI/.env.
+ *     ~/.config/athena/.env.
  *
  * This skill never reads credentials from settings.json or the skill
  * directory itself. If a secret lands in a file tracked by git or a
@@ -74,8 +74,8 @@ let cachedDotenv: Record<string, string> | null = null;
 function readDotenv(): Record<string, string> {
   if (cachedDotenv !== null) return cachedDotenv;
 
-  // XDG-compliant location first — PAI's managed secrets live here
-  const xdgPath = join(homedir(), '.config', 'PAI', '.env');
+  // XDG-compliant location first — shared secrets live here
+  const xdgPath = join(homedir(), '.config', 'athena', '.env');
   // ~/.env is a user-owned overlay; values here win over the XDG file
   const homePath = join(homedir(), '.env');
 

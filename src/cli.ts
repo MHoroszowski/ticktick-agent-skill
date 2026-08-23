@@ -44,8 +44,8 @@ export function createAdapter(): TickTickAdapter {
   const creds = loadCredentials();
   if (!creds) {
     const hint = account === 'test'
-      ? 'No TickTick TEST credentials. Set TICKTICK_TEST_EMAIL and TICKTICK_TEST_PASSWORD in ~/.config/PAI/.env (project-scoped service account).'
-      : 'No TickTick credentials. Set TICKTICK_EMAIL and TICKTICK_PASSWORD in ~/.env or ~/.config/PAI/.env.';
+      ? 'No TickTick TEST credentials. Set TICKTICK_TEST_EMAIL and TICKTICK_TEST_PASSWORD in ~/.config/athena/.env (project-scoped service account).'
+      : 'No TickTick credentials. Set TICKTICK_EMAIL and TICKTICK_PASSWORD in ~/.env or ~/.config/athena/.env.';
     throw new AdapterError('AUTH_MISSING_CREDS', hint);
   }
   // Defensive: if the session file on disk is malformed, delete it before
@@ -453,9 +453,9 @@ GLOBAL FLAGS
                      Select which TickTick account to use. Default: live
                      (your personal account, reads TICKTICK_EMAIL /
                      TICKTICK_PASSWORD from ~/.env). Pass 'test' to use
-                     the dedicated PAI service account (reads
+                     the dedicated service account (reads
                      TICKTICK_TEST_EMAIL / TICKTICK_TEST_PASSWORD from
-                     ~/.config/PAI/.env). Session files are namespaced
+                     ~/.config/athena/.env). Session files are namespaced
                      per account so the two never clobber each other.
 
 COMMANDS
@@ -612,7 +612,7 @@ ENVIRONMENT
   Test account (--account test):
     TICKTICK_TEST_EMAIL    (or TICKTICK_TEST_USERNAME) — project service account
     TICKTICK_TEST_PASSWORD
-  Both: PAI reads ~/.config/PAI/.env first, then overlays ~/.env.
+  Both: reads ~/.config/athena/.env first, then overlays ~/.env.
   TICKTICK_DEBUG=1    forces --debug
 
 NOTES
