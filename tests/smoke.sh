@@ -20,7 +20,19 @@
 #     item, completes and deletes the task
 #   - Corrupts the session file and runs whoami to prove auto-refresh works
 #
+# ⚠️  NOT CONFINED TO THE TEST PROJECT. Most steps stay inside
+#     "TEST - PAI Skill", but some exercise account-global surface and cannot:
+#       - creates, renames and deletes a TAG (tags are account-wide)
+#       - creates, updates and deletes a PROJECT (SMOKE_PROJ)
+#       - creates and deletes a task in the real "🛒Shopping" list (step 15/16)
+#       - bulk-creates and deletes batches of tasks
+#     Against SMOKE_ACCOUNT=live that is your real account. This is precisely
+#     why the live/test split exists — the --account flag, the account-scoped
+#     session and users files, and the separate credential keys are one
+#     mechanism. Don't remove part of it without replacing all of it.
+#
 # The script exits non-zero on any failure and stops at the first error.
+# It cleans up after itself, but a mid-run failure leaves residue behind.
 # ─────────────────────────────────────────────────────────────────
 
 set -euo pipefail

@@ -243,21 +243,32 @@ Mitigations in place:
 
 ## Running the smoke test
 
-Defaults to the service (`test`) account so probes never touch your live task data.
+Defaults to the service (`test`) account. **That default is a safety mechanism, not a convenience** — see the warning below before overriding it.
 
 Prerequisites:
 - `TICKTICK_TEST_EMAIL` / `TICKTICK_TEST_PASSWORD` in `~/.config/athena/.env` (the service account)
 - `jq` installed (`sudo apt-get install -y jq`)
-- A project named `TEST - PAI Skill` on the service account (create with `./bin/ticktick --account test projects create --name "TEST - PAI Skill"`)
+- A project named `TEST - PAI Skill` on the service account (create with `./bin/ticktick --account test projects create --name "TEST - PAI Skill"`). The name is historical; renaming it means renaming the real TickTick project, so it has been left alone.
 
 ```bash
 ./tests/smoke.sh                           # defaults to the test service account
-SMOKE_ACCOUNT=live ./tests/smoke.sh        # opt in to the live account (step 15's 🛒Shopping check only works here)
+SMOKE_ACCOUNT=live ./tests/smoke.sh        # opt in to the live account — read the warning first
 ```
+
+### ⚠️ The suite is not confined to the test project
+
+Most steps operate inside `TEST - PAI Skill`, but several cannot, because the things they exercise are account-global. Against whichever account it runs, the suite will:
+
+- **create, rename, and delete a tag** — tags are account-wide, not per-project
+- **create, update, and delete a project** (`SMOKE_PROJ`)
+- **create and then delete a task in your real `🛒Shopping` list** (step 15/16, the shared-list and kanban-section checks — this is the step that only works on `live`)
+- bulk-create and delete batches of tasks
+
+So `SMOKE_ACCOUNT=live` writes to and deletes from your actual account. It cleans up after itself and is idempotent, but a failure partway through leaves residue behind, and it is racing anything you do in the web or mobile UI at the same time. **This is why the two-account split exists** — `--account test`, the account-scoped session and user-cache files, and the separate credential keys are all one safety mechanism. Don't remove one part of it without replacing the whole thing.
 
 When running against `live`, make sure `TICKTICK_EMAIL` / `TICKTICK_PASSWORD` are set in `~/.env` and the `TEST - PAI Skill` project exists on your live account.
 
-The script is idempotent — it creates, mutates, and cleans up a single test task plus a checklist item, and verifies auto-refresh by corrupting the session file.
+The script verifies auth auto-refresh by deliberately corrupting the session file, so expect a re-login during the run.
 
 ## File layout
 
