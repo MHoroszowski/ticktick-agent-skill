@@ -60,7 +60,21 @@ export function createAdapter(): TickTickAdapter {
 }
 
 export async function main(argv: readonly string[]): Promise<number> {
-  const { opts, positional } = parseGlobalFlags(argv);
+  // Global-flag parsing has to be inside the error handler too. It can throw
+  // UsageError (an unknown --account value, a --account with no argument), and
+  // if that escapes, the CLI dumps a raw stack trace instead of the
+  // {ok:false,error:{code}} envelope every caller parses. Errors here are
+  // reported with default output settings, since the flags that would
+  // configure output are the ones that just failed to parse.
+  let opts: GlobalOpts;
+  let positional: readonly string[];
+  try {
+    ({ opts, positional } = parseGlobalFlags(argv));
+  } catch (err) {
+    writeError(mapAnyError(err));
+    return getExitCode(err);
+  }
+
   setDebug(opts.debug);
   setAccount(opts.account);
 
