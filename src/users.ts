@@ -9,11 +9,13 @@
  *      into the cache, so subsequent `--assignee Cris` style lookups can
  *      match by display name or email.
  *
- * Storage: ~/.claude/skills/TickTick/.session/users.json for the live
- * account, ~/.claude/skills/TickTick/.session/users-test.json for the
- * test account (0600 perms, same dir as the session blob — both are
- * auth-adjacent and gitignored). Per-account isolation is required
- * because `self.userId` and the known-users list differ between accounts.
+ * Storage: <cli-dir>/.session/users.json for the live account,
+ * <cli-dir>/.session/users-test.json for the test account (0600 perms,
+ * same dir as the session blob — both are auth-adjacent and gitignored).
+ * The install path is resolved from this file's location, never assumed,
+ * because it differs per host and per machine. Per-account isolation is
+ * required because `self.userId` and the known-users list differ between
+ * accounts.
  *
  * Shape:
  *   {
@@ -60,10 +62,10 @@ type UsersCache = {
 
 function usersFilePath(): string {
   const here = fileURLToPath(import.meta.url);
-  // /.../skills/TickTick/src/users.ts → /.../skills/TickTick/.session/users*.json
-  const skillDir = dirname(dirname(here));
+  // <cli-dir>/src/users.ts → <cli-dir>/.session/users*.json
+  const cliDir = dirname(dirname(here));
   const basename = getAccount() === 'test' ? 'users-test.json' : 'users.json';
-  return join(skillDir, '.session', basename);
+  return join(cliDir, '.session', basename);
 }
 
 function loadCache(): UsersCache {

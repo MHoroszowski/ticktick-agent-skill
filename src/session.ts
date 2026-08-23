@@ -4,7 +4,7 @@
  * The underlying FileSessionStore (from ticktick-client) handles the actual
  * read/write of the session blob. This module only takes responsibility for:
  *
- *   1. Resolving the session file path under the skill directory
+ *   1. Resolving the session file path under the CLI directory
  *   2. Creating the .session/ directory with mode 0700 if missing
  *   3. Enforcing mode 0600 on the session file when it exists
  *   4. Providing a `clearSession` helper for `logout`
@@ -44,8 +44,8 @@ function sessionFileName(): string {
  * on the file if it already exists.
  */
 export function resolveSessionPath(): string {
-  const skillDir = resolveSkillDir();
-  const sessionDir = join(skillDir, '.session');
+  const cliDir = resolveCliDir();
+  const sessionDir = join(cliDir, '.session');
 
   if (!existsSync(sessionDir)) {
     mkdirSync(sessionDir, { recursive: true, mode: DIR_MODE });
@@ -145,12 +145,12 @@ export function getSessionAgeSeconds(): number | null {
 }
 
 /**
- * Resolve the skill directory from this file's location, regardless of
+ * Resolve the CLI directory from this file's location, regardless of
  * where the Bun process was invoked from. We climb up from src/session.ts
- * to the skill root.
+ * to the CLI root.
  */
-function resolveSkillDir(): string {
+function resolveCliDir(): string {
   const here = fileURLToPath(import.meta.url);
-  // /.../skills/TickTick/src/session.ts → /.../skills/TickTick
+  // <cli-dir>/src/session.ts → <cli-dir>
   return dirname(dirname(here));
 }

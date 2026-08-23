@@ -439,7 +439,7 @@ export function requireFlag(
 // ──────────────────────────────────────────────────────────────────
 
 function helpText(): string {
-  return `ticktick — PAI skill CLI for TickTick (unofficial v2 API)
+  return `ticktick — CLI for TickTick (unofficial v2 API)
 
 USAGE
   ticktick <command> [subcommand] [flags]
