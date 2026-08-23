@@ -20,7 +20,7 @@ Known gaps that are out of scope for v1, tracked for future work.
    - `tasks restore`
    These typecheck and look wired but were not smoke-verified before ship. If any silently fails, apply the "upstream library bug pattern" from SKILL.md "Known quirks" — switch to the batch endpoint with a full record body. *Fix path:* write a focused diagnostic probe, exercise each once, fix any that silently fail via the adapter escape-hatch pattern.
 
-3. **The upstream `ticktick-client@0.2.1` library has a systemic bug pattern** where mutations sent via `POST /api/v2/task/{id}` silently no-op for fields like `pinnedTime` (and presumably others). The batch endpoint (`POST /api/v2/batch/task`) with a full task body is the reliable alternative. *Fix path:* file upstream PR #5 against `jaeyeonling/ticktick-client` to correct pin/unpin (and audit other patch-endpoint calls for the same issue).
+3. **The upstream library has a systemic bug pattern** (identified on `ticktick-client@0.2.1`; the skill moved to the `MHoroszowski` fork by sha on 2026-08-23, but the pattern is unchanged) where mutations sent via `POST /api/v2/task/{id}` silently no-op for fields like `pinnedTime` (and presumably others). The batch endpoint (`POST /api/v2/batch/task`) with a full task body is the reliable alternative. *Fix path:* file upstream PR #5 against `jaeyeonling/ticktick-client` to correct pin/unpin (and audit other patch-endpoint calls for the same issue).
 
 ---
 

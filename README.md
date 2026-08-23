@@ -224,20 +224,22 @@ If the `ticktick-client` library ever dies, is compromised, or a better library 
 
 ## Bus factor and supply chain
 
-`ticktick-client` is maintained by **one person** (`jaeyeonling`). It's currently actively verified against live TickTick traffic via Playwright capture, but the bus factor is 1.
+`ticktick-client` is maintained by **one person** (`jaeyeonling`). It's actively verified against live TickTick traffic via Playwright capture, but the bus factor is 1.
+
+**As of 2026-08-23 this skill no longer depends on the npm package at all.** It installs the fork, `MHoroszowski/ticktick-client`, pinned by commit sha:
+
+```json
+"ticktick-client": "github:MHoroszowski/ticktick-client#0ac0d569eb9c1f869f3ecee817c0c57ab0a5b50a"
+```
+
+That started as a bus-factor mitigation and became the primary path for a more mundane reason: **the npm package doesn't have the features.** Registry `ticktick-client` is upstream's and stops at 0.3.0, so everything the fork added after the fork point — the activity feed, project groups, kanban column mutations, the reminders write-path, MCP parity at 52 tools — is unreachable from npm. This skill sat on `0.2.1` and could not have used any of it.
 
 Mitigations in place:
-1. **Pinned to exact version** `ticktick-client@0.2.1` — no floating version ranges.
-2. **Fork on file**: `MHoroszowski/ticktick-client` at commit `813a2cb813805075d65acbb41791be338b67419c`. If upstream ever becomes unavailable or compromised, swap the dep line in `package.json` from:
-   ```json
-   "ticktick-client": "0.2.1"
-   ```
-   to:
-   ```json
-   "ticktick-client": "github:MHoroszowski/ticktick-client#813a2cb813805075d65acbb41791be338b67419c"
-   ```
-   and run `bun install`. You'll need to build the `dist/` via `tsup` inside the fork (or commit prebuilt dist to the fork) since GitHub installs don't ship compiled output.
-3. **Smoke test canary**: `tests/smoke.sh` hits the live API across every supported operation. Run it before and after upgrading the dep — if it breaks, the upstream broke. (Requires `jq` + a `TEST - PAI Skill` project in your TickTick.)
+1. **Pinned to an exact commit sha** — no floating ranges, no branch tracking.
+2. **The fork commits its built `dist/`**, so a git install needs no build step. This is deliberate: Bun *does* run `prepare` for git dependencies, but it installs them **without their devDependencies**, so `tsup` isn't on PATH and the build dies with exit 127. Building at install time would mean shipping `tsup` and `typescript` as runtime dependencies — worse than committing output.
+3. **Moving the pin** is: change the library in the fork, `bun run build`, commit `dist/`, push, then swap the sha here and `bun install`.
+4. **Upstream is still a remote** on the fork, and the fork is kept a strict superset of it — merge upstream in rather than diverging, so upstream fixes stay cheap to adopt. On an upstream merge, don't hand-resolve conflicts in `dist/`: take either side, rebuild, commit.
+5. **Smoke test canary**: `tests/smoke.sh` hits the live API across every supported operation. Run it before and after moving the pin — if it breaks, the library change broke it. (Requires `jq` + a `TEST - PAI Skill` project in your TickTick.)
 
 ## Running the smoke test
 

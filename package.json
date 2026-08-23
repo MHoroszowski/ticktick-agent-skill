@@ -12,9 +12,9 @@
     "smoke": "./tests/smoke.sh"
   },
   "dependencies": {
-    "ticktick-client": "0.2.1"
+    "ticktick-client": "github:MHoroszowski/ticktick-client#0ac0d569eb9c1f869f3ecee817c0c57ab0a5b50a"
   },
-  "//": "Using the npm package for prebuilt dist/. Bus-factor fallback: MHoroszowski/ticktick-client fork pinned at 813a2cb813805075d65acbb41791be338b67419c (swap dep line to github:MHoroszowski/ticktick-client#<sha> and commit prebuilt dist to the fork if npm is ever compromised or unpublished).",
+  "//": "Pinned to the MHoroszowski fork by sha, NOT the npm package. npm `ticktick-client` is upstream's and stops at 0.3.0, so it lacks everything the fork added after the fork point (activity feed, project groups, kanban columns, reminders write-path, MCP parity at 52 tools). The fork commits a prebuilt dist/, so it installs with no build step (bun runs `prepare` for git deps but installs them without devDependencies, so building at install time is not possible without shipping tsup as a runtime dep). To move the pin: push the fork, then swap the sha here and re-run `bun install`. When changing the library: build and commit dist/ in the fork, push, then swap the sha here.",
   "devDependencies": {
     "@types/bun": "latest",
     "typescript": "^5.4.0"
