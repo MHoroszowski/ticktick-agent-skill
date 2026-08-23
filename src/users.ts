@@ -9,11 +9,8 @@
  *      into the cache, so subsequent `--assignee Cris` style lookups can
  *      match by display name or email.
  *
- * Storage: ~/.claude/skills/TickTick/.session/users.json for the live
- * account, ~/.claude/skills/TickTick/.session/users-test.json for the
- * test account (0600 perms, same dir as the session blob — both are
- * auth-adjacent and gitignored). Per-account isolation is required
- * because `self.userId` and the known-users list differ between accounts.
+ * Storage: <cli-dir>/.session/users.json (0600 perms, same dir as the
+ * session blob — both are auth-adjacent and gitignored).
  *
  * Shape:
  *   {
@@ -38,7 +35,6 @@ import {
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { UsageError } from './errors.ts';
-import { getAccount } from './context.ts';
 import type { Member, User } from './adapter.ts';
 
 const FILE_MODE = 0o600;
@@ -60,10 +56,9 @@ type UsersCache = {
 
 function usersFilePath(): string {
   const here = fileURLToPath(import.meta.url);
-  // /.../skills/TickTick/src/users.ts → /.../skills/TickTick/.session/users*.json
-  const skillDir = dirname(dirname(here));
-  const basename = getAccount() === 'test' ? 'users-test.json' : 'users.json';
-  return join(skillDir, '.session', basename);
+  // /.../ticktick-cli/src/users.ts → /.../ticktick-cli/.session/users.json
+  const cliDir = dirname(dirname(here));
+  return join(cliDir, '.session', 'users.json');
 }
 
 function loadCache(): UsersCache {

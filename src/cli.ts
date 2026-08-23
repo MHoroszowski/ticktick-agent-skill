@@ -12,8 +12,6 @@ import { TickTickClientAdapter, AdapterError, mapLibraryError } from './adapter.
 import type { TickTickAdapter } from './adapter.ts';
 import { UsageError, getExitCode } from './errors.ts';
 import { setDebug, writeError, writeHuman } from './output.ts';
-import { getAccount, setAccount } from './context.ts';
-import type { Account } from './context.ts';
 
 import * as auth from './commands/auth.ts';
 import * as tasks from './commands/tasks.ts';
@@ -30,23 +28,20 @@ import * as sections from './commands/sections.ts';
 export type GlobalOpts = {
   readonly human: boolean;
   readonly debug: boolean;
-  readonly account: Account;
 };
 
 /**
- * Factory used by every command handler. Loads creds (for the active
- * account, set via context.setAccount), resolves the account-scoped
- * session path, constructs the adapter. Throws AUTH_MISSING_CREDS if
- * either env var is missing.
+ * Factory used by every command handler. Loads creds, resolves the session
+ * path, constructs the adapter. Throws AUTH_MISSING_CREDS if either env
+ * var is missing.
  */
 export function createAdapter(): TickTickAdapter {
-  const account = getAccount();
   const creds = loadCredentials();
   if (!creds) {
-    const hint = account === 'test'
-      ? 'No TickTick TEST credentials. Set TICKTICK_TEST_EMAIL and TICKTICK_TEST_PASSWORD in ~/.config/PAI/.env (project-scoped service account).'
-      : 'No TickTick credentials. Set TICKTICK_EMAIL and TICKTICK_PASSWORD in ~/.env or ~/.config/PAI/.env.';
-    throw new AdapterError('AUTH_MISSING_CREDS', hint);
+    throw new AdapterError(
+      'AUTH_MISSING_CREDS',
+      'No TickTick credentials. Set TICKTICK_EMAIL and TICKTICK_PASSWORD in ~/.env.',
+    );
   }
   // Defensive: if the session file on disk is malformed, delete it before
   // the library tries to load it. Otherwise the library crashes deep inside
@@ -62,7 +57,6 @@ export function createAdapter(): TickTickAdapter {
 export async function main(argv: readonly string[]): Promise<number> {
   const { opts, positional } = parseGlobalFlags(argv);
   setDebug(opts.debug);
-  setAccount(opts.account);
 
   if (positional.length === 0 || positional[0] === 'help' || positional[0] === '--help' || positional[0] === '-h') {
     writeHuman(helpText());
@@ -293,12 +287,8 @@ async function routeSections(argv: readonly string[], opts: GlobalOpts): Promise
 // ──────────────────────────────────────────────────────────────────
 
 /**
- * Strip global flags (--human, --debug, --json, --no-color, --account)
- * from argv, returning the cleaned positional array plus the parsed opts.
- *
- * --account accepts either `--account <value>` or `--account=<value>` and
- * defaults to 'live' if omitted. Unknown values raise UsageError so an
- * agent typo doesn't silently default to the wrong account.
+ * Strip global flags (--human, --debug, --json, --no-color) from argv,
+ * returning the cleaned positional array plus the parsed opts.
  */
 function parseGlobalFlags(argv: readonly string[]): {
   opts: GlobalOpts;
@@ -306,35 +296,15 @@ function parseGlobalFlags(argv: readonly string[]): {
 } {
   let human = false;
   let debug = false;
-  let account: Account = 'live';
   const positional: string[] = [];
   for (let i = 0; i < argv.length; i++) {
     const token = argv[i]!;
     if (token === '--human') { human = true; continue; }
     if (token === '--debug') { debug = true; continue; }
     if (token === '--json' || token === '--no-color') continue;
-    if (token === '--account') {
-      const next = argv[i + 1];
-      if (next === undefined || next.startsWith('--')) {
-        throw new UsageError('--account requires a value: live or test');
-      }
-      account = parseAccountValue(next);
-      i += 1;
-      continue;
-    }
-    if (token.startsWith('--account=')) {
-      account = parseAccountValue(token.slice('--account='.length));
-      continue;
-    }
     positional.push(token);
   }
-  return { opts: { human, debug, account }, positional };
-}
-
-function parseAccountValue(raw: string): Account {
-  const v = raw.trim().toLowerCase();
-  if (v === 'live' || v === 'test') return v;
-  throw new UsageError(`Unknown --account value '${raw}'. Expected 'live' or 'test'.`);
+  return { opts: { human, debug }, positional };
 }
 
 /**
@@ -439,7 +409,7 @@ export function requireFlag(
 // ──────────────────────────────────────────────────────────────────
 
 function helpText(): string {
-  return `ticktick — PAI skill CLI for TickTick (unofficial v2 API)
+  return `ticktick — CLI for TickTick (unofficial v2 API)
 
 USAGE
   ticktick <command> [subcommand] [flags]
@@ -449,14 +419,6 @@ GLOBAL FLAGS
   --debug            Emit debug info to stderr
   --json             Explicit JSON output (default)
   --no-color         No color in output (no-op for now)
-  --account live|test
-                     Select which TickTick account to use. Default: live
-                     (your personal account, reads TICKTICK_EMAIL /
-                     TICKTICK_PASSWORD from ~/.env). Pass 'test' to use
-                     the dedicated PAI service account (reads
-                     TICKTICK_TEST_EMAIL / TICKTICK_TEST_PASSWORD from
-                     ~/.config/PAI/.env). Session files are namespaced
-                     per account so the two never clobber each other.
 
 COMMANDS
   login                                    Force fresh login (seeds session)
@@ -498,128 +460,79 @@ COMMANDS
                                            positive integer). 50m is tight, 200m
                                            is lenient.
     --location-trigger arrive|leave        when to fire (default: arrive).
-                                           arrive = entering the radius;
-                                           leave = exiting it.
-    --location-alias <text>                friendly label for the location, e.g.
-                                           "Home" / "Work" / "Dry Cleaner".
-    --location-address <text>              full street address (display only).
-  tasks update --id <id> --project <pid> [flags]
-                                           Update a task (same optional fields).
-                                           --remind REPLACES all existing
-                                           reminders (use 'tasks remind add'
-                                           to append, 'tasks remind clear'
-                                           to remove all).
-                                           --location-* sets/replaces the geofence
-                                           in place. Use 'tasks location clear' to
-                                           remove a geofence — passing
-                                           --location-* flags can only set, not clear.
-                                           Note: --parent is NOT accepted on update;
-                                           use 'tasks indent' / 'tasks promote'.
-  tasks complete --id <id> [--project <pid>]
-                                           Mark a task done
-  tasks delete --id <id> [--project <pid>]
-                                           Delete (abandon) a task. Children are
-                                           ORPHANED (not cascade-deleted) — they
-                                           remain with their parentId pointing at
-                                           the deleted parent.
-  tasks move --id <id> --to <id|name> [--from <pid>]
-                                           Move to a different list.
-                                           ⚠️ returns a NEW task id (copy+delete)
-  tasks pin --id <id> [--project <pid>]    Pin a task to the top
-  tasks unpin --id <id> [--project <pid>]  Unpin a task
-  tasks restore --id <id> --project <pid>  Restore a deleted task (id required —
-                                           trash listing is broken upstream)
+    --location-alias <name>                human label for the geofence.
+    --location-address <text>              free-text address for display.
+  tasks update --id <id> --project <p> [flags]
+                                           Update a task. --project is REQUIRED
+                                           (even if unchanged). All other flags
+                                           same as create.
+  tasks complete --id <id> --project <p>   Mark a task done
+  tasks delete --id <id> --project <p>     Delete a task (trash; restore works)
+  tasks move --id <id> --from <p> --to <p>
+                                           Move between lists. WARNING: changes
+                                           the task id (copy+delete). Response
+                                           includes previousId for tracking.
+  tasks pin --id <id> --project <p>        Pin a task
+  tasks unpin --id <id> --project <p>      Unpin a task
+  tasks restore --id <id> --project <p>    Restore from trash (requires explicit id)
+  tasks create-many --file <path>          Bulk create from JSON file
+  tasks update-many --file <path>          Bulk update from JSON file
+  tasks delete-many --ids <csv>            Bulk delete (comma-separated ids)
+  tasks complete-many --ids <csv>          Bulk complete (comma-separated ids)
   tasks completed [flags]                  List completed tasks
-    --project <id|name> --limit N            paginated iterator mode
-    --from <ISO> --to <ISO> [--limit N]      statistics range mode (mutex w/ --project)
-  tasks create-many --file <path.json>     Bulk-create tasks from a JSON array
-  tasks update-many --file <path.json>     Bulk-update (each entry needs id+projectId+title)
-  tasks delete-many --ids id1,id2,id3      Bulk-delete (project resolved per id)
-  tasks complete-many --ids id1,id2,id3    Bulk-complete (project resolved per id)
-  tasks remind add --id <id> --offset <off> [--project <pid>]
-                                           Append a reminder to an existing task.
-  tasks remind remove --id <id> --offset <off> [--project <pid>]
-                                           Remove a specific reminder by offset.
-  tasks remind clear --id <id> [--project <pid>]
-                                           Remove all reminders from a task.
-  tasks location clear --id <id> [--project <pid>]
-                                           Remove the geofence reminder from a task.
-                                           (Set/replace via 'tasks create' or
-                                           'tasks update' with --location-* flags.)
-  tasks indent --id <id> --under <parentId> [--project <pid>]
-                                           Make <id> a nested subtask of <parentId>.
-                                           In-place (id is preserved).
-  tasks promote --id <id> [--project <pid>]
-                                           Make <id> top-level (clear its parent).
-                                           In-place (id is preserved).
+    --project <id|name>                      scope to one project (paginated)
+    --from <ISO> --to <ISO>                  date range (client-side filtered)
+    --limit N                                cap result count
+  tasks remind add --id <id> --project <p> --remind <offset>
+                                           Append a reminder (requires --due)
+  tasks remind remove --id <id> --project <p> --remind <offset>
+                                           Remove a specific reminder
+  tasks remind clear --id <id> --project <p>
+                                           Clear all reminders
+  tasks location clear --id <id> --project <p>
+                                           Clear geofence reminder
+  tasks indent --id <id> --project <p> --parent <parentId>
+                                           Make a task a child of another
+  tasks promote --id <id> --project <p>    Make a child task top-level
 
   projects list                            List all projects
-  projects get --id <id|name>              Fetch one project
-  projects create --name <name> [flags]    Create a project
-    --color <#RRGGBB> --kind task|note --view list|kanban|timeline
-  projects update --id <id|name> [flags]   Update a project (--name/--color/--view/--kind)
-  projects delete --id <id|name> --confirm
-                                           Delete a project AND all its tasks.
-                                           --confirm is required.
-
-  sections list --project <id|name>        List kanban sections (columns) in a project
-  sections create --project <id|name> --name <text> [--before|--after <id|name>]
-                                           Create a new section; optional placement
-                                           relative to an anchor section.
-  sections rename --project <id|name> --section <id|name> --to <text>
-                                           Rename an existing section.
-  sections delete --project <id|name> --section <id|name> [--reassign <id|name>] --confirm
-                                           Delete a section. Destructive: requires
-                                           --confirm. Without --reassign, tasks in
-                                           the section are orphaned (columnId cleared).
-                                           With --reassign, tasks are moved to the
-                                           named target section first.
-  sections move --project <id|name> --section <id|name> --before|--after <id|name>
-                                           Reorder a section by placing it before
-                                           or after another section in the list.
-
-  members list --project <id|name>         List members of a shared project
-  members remove --project <id|name> --user <id|name|me> [--force]
-                                           Revoke a user's access to a shared
-                                           project. Dry-run by default; pass
-                                           --force to actually remove.
+  projects get --id <id>                   Get a single project
+  projects create --name <n> [flags]       Create a project
+    --color <hex> --kind TASK|NOTE
+    --view list|kanban|timeline
+  projects update --id <id> [flags]        Update a project
+  projects delete --id <id> --confirm      Delete a project (requires --confirm)
 
   tags list                                List all tags
-  tags create --name <slug> [flags]        Create a tag (--label, --color, --parent)
-  tags update --name <slug> [flags]        Update a tag (--label / --color / --parent)
-  tags delete --name <slug>                Delete a tag
-  tags rename --name <old> --to <new>      Rename a tag (slug-to-slug)
-  tags merge --from <a> --to <b>           Merge tag a into b (a is removed)
+  tags create --name <n> [--label <l>] [--color <hex>]
+                                           Create a tag
 
-  checklist list --task <id>               List checklist items inside a task
-  checklist add --task <id> --project <pid> --title <t>
-  checklist complete --task <id> --project <pid> --item <itemId>
-  checklist delete --task <id> --project <pid> --item <itemId>
+  checklist list --task <id>               List checklist items
+  checklist add --task <id> --title <t>    Add a checklist item
+  checklist complete --task <id> --item <itemId>
+                                           Complete a checklist item
+  checklist delete --task <id> --item <itemId>
+                                           Delete a checklist item
 
-EXIT CODES
-  0  success
-  1  unexpected error
-  2  usage error
-  3  auth error (missing creds, failed login, expired session)
-  4  not found
-  5  network / rate limited
-  6  validation error
+  members list --project <id|name>         List shared-project members
+  members remove --project <id|name> --user <id|name>
+                                           Remove a member (dry-run by default;
+                                           --force to commit)
 
-ENVIRONMENT
-  Live account (default, --account live):
-    TICKTICK_EMAIL    (or TICKTICK_USERNAME) — user's personal account
-    TICKTICK_PASSWORD
-  Test account (--account test):
-    TICKTICK_TEST_EMAIL    (or TICKTICK_TEST_USERNAME) — project service account
-    TICKTICK_TEST_PASSWORD
-  Both: PAI reads ~/.config/PAI/.env first, then overlays ~/.env.
-  TICKTICK_DEBUG=1    forces --debug
+  sections list --project <id|name>        List kanban columns
+  sections create --project <id|name> --name <n>
+                                           Create a column
+  sections rename --project <id|name> --id <colId> --name <n>
+                                           Rename a column
+  sections delete --project <id|name> --id <colId> [--reassign <colId>]
+                                           Delete a column (optionally move tasks)
+  sections move --project <id|name> --id <colId> --before <colId>
+                                           Reorder a column
 
-NOTES
-  - Nested subtasks: use --parent on create, or 'tasks indent' / 'tasks promote'
-    to re-parent existing tasks. Distinct from checklist items (use 'checklist').
-  - Parent-delete ORPHANS children. They remain with parentId pointing at the
-    deleted parent. Promote or delete them explicitly if needed.
-  - 2FA / MFA on your account is NOT supported.
+CREDENTIALS
+  Set TICKTICK_EMAIL and TICKTICK_PASSWORD in ~/.env
+
+SESSION
+  Session file: <cli-dir>/.session/ticktick.json (0600)
 `;
 }

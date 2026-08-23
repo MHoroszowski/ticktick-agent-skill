@@ -4,7 +4,7 @@
  * The underlying FileSessionStore (from ticktick-client) handles the actual
  * read/write of the session blob. This module only takes responsibility for:
  *
- *   1. Resolving the session file path under the skill directory
+ *   1. Resolving the session file path under the CLI directory
  *   2. Creating the .session/ directory with mode 0700 if missing
  *   3. Enforcing mode 0600 on the session file when it exists
  *   4. Providing a `clearSession` helper for `logout`
@@ -24,19 +24,9 @@ import {
 } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { getAccount } from './context.ts';
 
 const DIR_MODE = 0o700;
 const FILE_MODE = 0o600;
-
-/**
- * Session file basename is account-scoped so the live and test accounts
- * never clobber each other's auth state. Lives in the same .session/
- * directory to keep the 0700 / 0600 perm enforcement centralized.
- */
-function sessionFileName(): string {
-  return getAccount() === 'test' ? 'ticktick-test.json' : 'ticktick.json';
-}
 
 /**
  * Returns the absolute path to the session file, creating the parent
@@ -44,8 +34,8 @@ function sessionFileName(): string {
  * on the file if it already exists.
  */
 export function resolveSessionPath(): string {
-  const skillDir = resolveSkillDir();
-  const sessionDir = join(skillDir, '.session');
+  const cliDir = resolveCliDir();
+  const sessionDir = join(cliDir, '.session');
 
   if (!existsSync(sessionDir)) {
     mkdirSync(sessionDir, { recursive: true, mode: DIR_MODE });
@@ -59,7 +49,7 @@ export function resolveSessionPath(): string {
     }
   }
 
-  const sessionPath = join(sessionDir, sessionFileName());
+  const sessionPath = join(sessionDir, 'ticktick.json');
 
   if (existsSync(sessionPath)) {
     try {
@@ -145,12 +135,12 @@ export function getSessionAgeSeconds(): number | null {
 }
 
 /**
- * Resolve the skill directory from this file's location, regardless of
+ * Resolve the CLI directory from this file's location, regardless of
  * where the Bun process was invoked from. We climb up from src/session.ts
- * to the skill root.
+ * to the CLI root.
  */
-function resolveSkillDir(): string {
+function resolveCliDir(): string {
   const here = fileURLToPath(import.meta.url);
-  // /.../skills/TickTick/src/session.ts → /.../skills/TickTick
+  // /.../ticktick-cli/src/session.ts → /.../ticktick-cli
   return dirname(dirname(here));
 }

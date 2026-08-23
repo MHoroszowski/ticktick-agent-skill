@@ -1,34 +1,20 @@
 /**
- * env.ts — load TickTick credentials.
+ * env.ts — load TickTick credentials from ~/.env.
  *
- * Precedence (first match wins at read time; reads cache both files):
+ * Precedence (first match wins at read time):
  *   1. process.env (already set, from a parent shell or CLI wrapper)
- *   2. ~/.env — user-owned overlay (optional)
- *   3. ~/.config/PAI/.env — PAI-managed XDG-compliant secrets file
- *   4. undefined → caller decides whether to fail
+ *   2. ~/.env — user-owned credential file
+ *   3. undefined → caller decides whether to fail
  *
- * The XDG file is the canonical home for PAI-managed secrets; ~/.env is
- * the user's personal file and is read as an optional overlay so users
- * can keep ~/.env for their own purposes without PAI claiming it.
+ * Keys: TICKTICK_EMAIL (or TICKTICK_USERNAME) and TICKTICK_PASSWORD.
  *
- * Two accounts are supported, selected by `context.getAccount()`:
- *   - 'live' (default) — the user's personal TickTick account. Keys:
- *     TICKTICK_EMAIL (or TICKTICK_USERNAME) and TICKTICK_PASSWORD.
- *     These are user-scoped and belong in ~/.env.
- *   - 'test' — a dedicated service account for PAI-skill development.
- *     Keys: TICKTICK_TEST_EMAIL (or TICKTICK_TEST_USERNAME) and
- *     TICKTICK_TEST_PASSWORD. These are project-scoped and belong in
- *     ~/.config/PAI/.env.
- *
- * This skill never reads credentials from settings.json or the skill
- * directory itself. If a secret lands in a file tracked by git or a
- * harness config, that's a bug.
+ * This CLI never reads credentials from settings.json or the skill
+ * directory itself. If a secret lands in a file tracked by git, that's a bug.
  */
 
 import { existsSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import { getAccount } from './context.ts';
 
 export type Credentials = {
   readonly email: string;
@@ -36,18 +22,12 @@ export type Credentials = {
 };
 
 /**
- * Load credentials for the currently-active account (set via
- * `context.setAccount`). Returns null if either value is missing — the
+ * Load credentials. Returns null if either value is missing — the
  * caller should surface AUTH_MISSING_CREDS with an actionable hint.
  */
 export function loadCredentials(): Credentials | null {
-  const account = getAccount();
-  const emailKeys = account === 'test'
-    ? ['TICKTICK_TEST_EMAIL', 'TICKTICK_TEST_USERNAME']
-    : ['TICKTICK_EMAIL', 'TICKTICK_USERNAME'];
-  const passwordKey = account === 'test'
-    ? 'TICKTICK_TEST_PASSWORD'
-    : 'TICKTICK_PASSWORD';
+  const emailKeys = ['TICKTICK_EMAIL', 'TICKTICK_USERNAME'];
+  const passwordKey = 'TICKTICK_PASSWORD';
 
   let email: string | null = null;
   for (const key of emailKeys) {
@@ -74,16 +54,12 @@ let cachedDotenv: Record<string, string> | null = null;
 function readDotenv(): Record<string, string> {
   if (cachedDotenv !== null) return cachedDotenv;
 
-  // XDG-compliant location first — PAI's managed secrets live here
-  const xdgPath = join(homedir(), '.config', 'PAI', '.env');
-  // ~/.env is a user-owned overlay; values here win over the XDG file
   const homePath = join(homedir(), '.env');
 
   const merged: Record<string, string> = {};
-  for (const path of [xdgPath, homePath]) {
-    if (!existsSync(path)) continue;
+  if (existsSync(homePath)) {
     try {
-      const raw = readFileSync(path, 'utf-8');
+      const raw = readFileSync(homePath, 'utf-8');
       Object.assign(merged, parseDotenv(raw));
     } catch {
       // ignore; keep whatever merged successfully so far
